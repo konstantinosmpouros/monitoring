@@ -1,0 +1,193 @@
+# CI/CD for the Dennis monitoring stack. No image is built: the stack runs
+# pinned upstream images, and its configs are bind-mounted on Dennis from the
+# repo checkout /opt/monitoring/repo.
+#   ci: validate every config (every push, PR and manual run)
+#   cd: push to main that changed a deployed file, or Run workflow — owner only
+#       1. SSH (forced-command key) → /opt/deploy/monitoring.sh <sha>: check out
+#          the sha, force-update only the services whose config changed
+#       2. Portainer webhook when docker-compose-denis.yml changed
+# Runbook: CLAUDE.md § CD to Dennis.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ci-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    outputs:
+      deploy: ${{ steps.release.outputs.deploy }}
+      redeploy: ${{ steps.release.outputs.redeploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0 # full history for the release diff below
+
+      # Diffed with git: Actions' push payload has no file lists.
+      #   deploy:   a bind-mounted config or the Dennis compose changed (main push), or Run workflow
+      #   redeploy: the Dennis compose changed, or Run workflow → also call the Portainer webhook
+      - name: Is this a deploy? (deployed files changed)
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          configs='prometheus.yml alert.rules.yml alertmanager.yml loki-config.yml loki-rules.yml alloy-config.alloy grafana'
+          compose='docker-compose-denis.yml'
+          deploy=false; redeploy=false
+          if [ "$EVENT" = workflow_dispatch ] && [ "$REF" = refs/heads/main ]; then
+            deploy=true; redeploy=true
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            if [ -z "$PUSH_BEFORE" ] || ! git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+              deploy=true; redeploy=true # no usable base: can't tell, so don't skip a deploy
+            else
+              # shellcheck disable=SC2086 # word-splitting the path lists is intended
+              git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- $configs $compose || deploy=true
+              git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- $compose || redeploy=true
+            fi
+          fi
+          { echo "deploy=$deploy"; echo "redeploy=$redeploy"; } | tee -a "$GITHUB_OUTPUT"
+
+      # The local compose reads a gitignored secret file; give it a throwaway one.
+      - name: Compose files
+        env:
+          GRAFANA_USER: ci
+        run: |
+          mkdir -p secrets
+          printf 'ci-only' > secrets/grafana_admin_password
+          docker compose -f docker-compose.yaml config -q
+          docker compose -f docker-compose-denis.yml config -q
+
+      # rule_files points at /etc/prometheus/alert.rules.yml, so mount it there.
+      - name: Prometheus config + rules (promtool)
+        run: |
+          for cfg in prometheus.yml local/prometheus.yml; do
+            docker run --rm -v "$PWD:/w:ro" \
+              -v "$PWD/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro" \
+              --entrypoint promtool prom/prometheus:v2.44.0 check config "/w/$cfg"
+          done
+          docker run --rm -v "$PWD:/w:ro" --entrypoint promtool \
+            prom/prometheus:v2.44.0 check rules /w/alert.rules.yml
+
+      - name: Alertmanager config (amtool)
+        run: |
+          docker run --rm -v "$PWD:/w:ro" --entrypoint amtool prom/alertmanager:v0.27.0 \
+            check-config /w/alertmanager.yml /w/local/alertmanager.yml
+
+      - name: Loki config
+        run: |
+          docker run --rm -v "$PWD:/w:ro" grafana/loki:3.1.1 \
+            -config.file=/w/loki-config.yml -verify-config
+
+      - name: Alloy config syntax
+        run: |
+          for cfg in alloy-config.alloy local/alloy-config.alloy; do
+            docker run --rm -v "$PWD:/w:ro" grafana/alloy:v1.4.2 fmt "/w/$cfg" > /dev/null
+          done
+
+      - name: Grafana dashboards are valid JSON
+        run: |
+          for f in grafana/dashboards/*/*.json; do
+            jq empty "$f"
+          done
+
+      - name: Deploy script (bash -n + shellcheck)
+        run: |
+          bash -n deploy/dennis-deploy.sh
+          docker run --rm -v "$PWD:/mnt:ro" \
+            koalaman/shellcheck:v0.10.0@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb \
+            /mnt/deploy/dennis-deploy.sh
+
+  # CD — syncs configs on Dennis, then (compose changed) redeploys the Portainer
+  # stack. Never runs for a pull request; only the owner, only this repo.
+  cd:
+    name: cd
+    needs: [ci]
+    if: >-
+      needs.ci.outputs.deploy == 'true'
+      && github.event_name != 'pull_request'
+      && github.repository == 'konstantinosmpouros/monitoring'
+      && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-monitoring
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      # Fail closed: a re-run by someone else is refused too.
+      - name: Only the repository owner can deploy
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::Deploys are started by $OWNER only (this run was started by $ACTOR)."
+            exit 1
+          fi
+
+      # The key only ever exists in $RUNNER_TEMP (0600), and is removed below.
+      - name: Write the deploy key and pinned host key
+        env:
+          SSH_KEY: ${{ secrets.DENNIS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DENNIS_SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.DENNIS_SSH_HOST }}
+          SSH_USER: ${{ secrets.DENNIS_SSH_USER }}
+        run: |
+          missing=0
+          for v in SSH_KEY KNOWN_HOSTS SSH_HOST SSH_USER; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Repository secret for $v is not set (DENNIS_SSH_KEY / DENNIS_SSH_KNOWN_HOSTS / DENNIS_SSH_HOST / DENNIS_SSH_USER — Settings → Secrets and variables → Actions)."
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          umask 077
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+
+      # The forced command ignores everything but a 40-hex sha on main.
+      - name: Sync configs on Dennis (checkout + restart changed services)
+        env:
+          SSH_HOST: ${{ secrets.DENNIS_SSH_HOST }}
+          SSH_USER: ${{ secrets.DENNIS_SSH_USER }}
+        run: |
+          ssh -i "$RUNNER_TEMP/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 \
+            "$SSH_USER@$SSH_HOST" "$GITHUB_SHA"
+
+      # Portainer pulls main and redeploys the Swarm stack. Safe to retry.
+      - name: Tell Portainer to pull main and redeploy the stack
+        if: needs.ci.outputs.redeploy == 'true'
+        env:
+          WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::error::PORTAINER_WEBHOOK_URL is not set (Settings → Secrets and variables → Actions → Repository secrets)."
+            exit 1
+          fi
+          curl -fsS --max-time 60 --retry 3 --retry-all-errors -X POST -o /dev/null "$WEBHOOK_URL"
+
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"

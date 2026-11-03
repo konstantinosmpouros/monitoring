@@ -1,0 +1,11 @@
+# Grafana admin password (local) — never committed
+secrets/
+
+# Grafana TLS cert + private key for Dennis — never committed
+tls/
+
+.env
+*.env
+
+# CD deploy keys (generated locally, uploaded as a GitHub secret) — never committed
+gha_*
