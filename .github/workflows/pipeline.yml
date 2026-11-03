@@ -1,12 +1,15 @@
-# CI/CD for the Dennis monitoring stack. No image is built: the stack runs
-# pinned upstream images, and its configs are bind-mounted on Dennis from the
-# repo checkout /opt/monitoring/repo.
-#   ci: validate every config (every push, PR and manual run)
-#   cd: push to main that changed a deployed file, or Run workflow — owner only
-#       1. SSH (forced-command key) → /opt/deploy/monitoring.sh <sha>: check out
-#          the sha, force-update only the services whose config changed
-#       2. Portainer webhook when docker-compose-denis.yml changed
-# Runbook: CLAUDE.md § CD to Dennis.
+# CI/CD for the Dennis monitoring stack. Every config is baked into a
+# `monitoring_<service>` image (images/<service>/Dockerfile); the Swarm stack
+# on Dennis runs those images, so a deploy is just "new tag + Portainer webhook".
+#   ci       validate every config, build every image (no push) — every push, PR
+#            and manual run
+#   release  push to main that changed docker-compose-denis.yml, or Run
+#            workflow — owner only: build the images whose tag isn't published
+#            yet on ARM64, Trivy (fixable CRITICAL blocks), push to GHCR, verify
+#            every image is private. Published tags are never overwritten.
+#   cd       after release: Portainer webhook → wait until the live Grafana
+#            serves the new tag. No SSH: nothing on Dennis but Portainer moves.
+# RELEASE = bump the shared monitoring_* tag in docker-compose-denis.yml.
 name: CI/CD
 
 on:
@@ -18,48 +21,23 @@ on:
 permissions:
   contents: read
 
+env:
+  COMPOSE_FILE: docker-compose-denis.yml
+  # Every images/<service>/ folder; each must have exactly one
+  # monitoring_<service> image line in the Dennis compose.
+  SERVICES: grafana prometheus alertmanager loki alloy
+
 jobs:
   ci:
     name: ci
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     concurrency:
       group: ci-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    outputs:
-      deploy: ${{ steps.release.outputs.deploy }}
-      redeploy: ${{ steps.release.outputs.redeploy }}
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-        with:
-          fetch-depth: 0 # full history for the release diff below
-
-      # Diffed with git: Actions' push payload has no file lists.
-      #   deploy:   a bind-mounted config or the Dennis compose changed (main push), or Run workflow
-      #   redeploy: the Dennis compose changed, or Run workflow → also call the Portainer webhook
-      - name: Is this a deploy? (deployed files changed)
-        id: release
-        env:
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          configs='prometheus.yml alert.rules.yml alertmanager.yml loki-config.yml loki-rules.yml alloy-config.alloy grafana'
-          compose='docker-compose-denis.yml'
-          deploy=false; redeploy=false
-          if [ "$EVENT" = workflow_dispatch ] && [ "$REF" = refs/heads/main ]; then
-            deploy=true; redeploy=true
-          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
-            if [ -z "$PUSH_BEFORE" ] || ! git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
-              deploy=true; redeploy=true # no usable base: can't tell, so don't skip a deploy
-            else
-              # shellcheck disable=SC2086 # word-splitting the path lists is intended
-              git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- $configs $compose || deploy=true
-              git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- $compose || redeploy=true
-            fi
-          fi
-          { echo "deploy=$deploy"; echo "redeploy=$redeploy"; } | tee -a "$GITHUB_OUTPUT"
 
       # The local compose reads a gitignored secret file; give it a throwaway one.
       - name: Compose files
@@ -69,7 +47,7 @@ jobs:
           mkdir -p secrets
           printf 'ci-only' > secrets/grafana_admin_password
           docker compose -f docker-compose.yaml config -q
-          docker compose -f docker-compose-denis.yml config -q
+          docker compose -f "$COMPOSE_FILE" config -q
 
       # rule_files points at /etc/prometheus/alert.rules.yml, so mount it there.
       - name: Prometheus config + rules (promtool)
@@ -77,25 +55,25 @@ jobs:
           for cfg in prometheus.yml local/prometheus.yml; do
             docker run --rm -v "$PWD:/w:ro" \
               -v "$PWD/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro" \
-              --entrypoint promtool prom/prometheus:v2.44.0 check config "/w/$cfg"
+              --entrypoint promtool prom/prometheus:v3.13.5 check config "/w/$cfg"
           done
           docker run --rm -v "$PWD:/w:ro" --entrypoint promtool \
-            prom/prometheus:v2.44.0 check rules /w/alert.rules.yml
+            prom/prometheus:v3.13.5 check rules /w/alert.rules.yml
 
       - name: Alertmanager config (amtool)
         run: |
-          docker run --rm -v "$PWD:/w:ro" --entrypoint amtool prom/alertmanager:v0.27.0 \
+          docker run --rm -v "$PWD:/w:ro" --entrypoint amtool prom/alertmanager:v0.34.1 \
             check-config /w/alertmanager.yml /w/local/alertmanager.yml
 
       - name: Loki config
         run: |
-          docker run --rm -v "$PWD:/w:ro" grafana/loki:3.1.1 \
+          docker run --rm -v "$PWD:/w:ro" grafana/loki:3.7.8 \
             -config.file=/w/loki-config.yml -verify-config
 
       - name: Alloy config syntax
         run: |
           for cfg in alloy-config.alloy local/alloy-config.alloy; do
-            docker run --rm -v "$PWD:/w:ro" grafana/alloy:v1.4.2 fmt "/w/$cfg" > /dev/null
+            docker run --rm -v "$PWD:/w:ro" grafana/alloy:v1.20.1 fmt "/w/$cfg" > /dev/null
           done
 
       - name: Grafana dashboards are valid JSON
@@ -104,33 +82,234 @@ jobs:
             jq empty "$f"
           done
 
-      - name: Deploy script (bash -n + shellcheck)
+      # Catches a broken Dockerfile / COPY path on every PR; release rebuilds on ARM64.
+      - name: Build every image (no push)
         run: |
-          bash -n deploy/dennis-deploy.sh
-          docker run --rm -v "$PWD:/mnt:ro" \
-            koalaman/shellcheck:v0.10.0@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb \
-            /mnt/deploy/dennis-deploy.sh
+          for svc in $SERVICES; do
+            echo "::group::$svc"
+            docker build --pull -f "images/$svc/Dockerfile" -t "ci/monitoring_$svc" .
+            echo "::endgroup::"
+          done
 
-  # CD — syncs configs on Dennis, then (compose changed) redeploys the Portainer
-  # stack. Never runs for a pull request; only the owner, only this repo.
+  release:
+    name: release
+    needs: [ci]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04-arm # Dennis is ARM64: native build, no QEMU
+    timeout-minutes: 45
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0 # full history for the release diff below
+
+      # A change to the Dennis compose on main (or Run workflow on main) is a
+      # release. Diffed with git: Actions' push payload has no file lists.
+      - name: Is this a release? (docker-compose-denis.yml changed)
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          inputs='images grafana prometheus.yml alert.rules.yml alertmanager.yml loki-config.yml loki-rules.yml alloy-config.alloy'
+          release=false
+          if [ "$REF" = refs/heads/main ]; then
+            if [ "$EVENT" = workflow_dispatch ]; then
+              release=true
+            elif [ "$EVENT" = push ]; then
+              if [ -z "$PUSH_BEFORE" ] || ! git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+                release=true # no usable base: can't tell, so don't skip a release
+              elif ! git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- "$COMPOSE_FILE"; then
+                release=true
+              else
+                # shellcheck disable=SC2086 # word-splitting the path list is intended
+                if ! git diff --quiet "$PUSH_BEFORE" "$GITHUB_SHA" -- $inputs; then
+                  echo "::warning::Configs changed but the monitoring_* tag in $COMPOSE_FILE did not — nothing is released until you bump it."
+                fi
+              fi
+            fi
+          fi
+          echo "release=$release" | tee -a "$GITHUB_OUTPUT"
+
+      # Fail closed: only the repository owner can ship to production (also
+      # covers a re-run started by someone else).
+      - name: Only the repository owner can release
+        if: steps.release.outputs.release == 'true'
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::Releases are started by $OWNER only (this run was started by $ACTOR)."
+            exit 1
+          fi
+
+      # Exactly one image line per service, all on the same vX.Y.Z tag.
+      - name: The release tag
+        id: tag
+        if: steps.release.outputs.release == 'true'
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          tags=()
+          for svc in $SERVICES; do
+            repo="ghcr.io/$owner/monitoring_$svc"
+            lines=$(grep -E "^[[:space:]]+image:[[:space:]]+${repo}:" "$COMPOSE_FILE" || true)
+            count=$(printf '%s\n' "$lines" | grep -c . || true)
+            if [ "$count" != "1" ]; then
+              echo "::error::$COMPOSE_FILE must name exactly one '$repo:vX.Y.Z' image (found $count)"
+              exit 1
+            fi
+            tags+=("$(printf '%s' "${lines##*:}" | tr -d '[:space:]')")
+          done
+          unique=$(printf '%s\n' "${tags[@]}" | sort -u)
+          if [ "$(printf '%s\n' "$unique" | grep -c .)" != "1" ]; then
+            echo "::error::Every monitoring_* image must carry the same tag (found: ${tags[*]})"
+            exit 1
+          fi
+          if ! [[ "$unique" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$unique' is not a vX.Y.Z release tag"
+            exit 1
+          fi
+          { echo "tag=$unique"; echo "registry=ghcr.io/$owner"; } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: steps.release.outputs.release == 'true'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # Tags are never overwritten: only the images this tag is missing for are built.
+      - name: Which images are new?
+        id: missing
+        if: steps.release.outputs.release == 'true'
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          missing=""
+          for svc in $SERVICES; do
+            image="$REGISTRY/monitoring_$svc:$TAG"
+            if out=$(docker manifest inspect "$image" 2>&1); then
+              echo "::notice::$image is already published — not rebuilt (tags are never overwritten)."
+              continue
+            fi
+            # "denied" counts as absent (the push would be refused too); anything
+            # else fails rather than risk overwriting a published tag.
+            if ! printf '%s' "$out" | grep -qiE "manifest unknown|no such manifest|not found|name unknown|denied"; then
+              echo "::error::Could not tell whether $image exists: $out"
+              exit 1
+            fi
+            missing="$missing $svc"
+          done
+          echo "services=${missing# }" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Build
+        if: steps.missing.outputs.services != ''
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NEW: ${{ steps.missing.outputs.services }}
+        run: |
+          for svc in $NEW; do
+            echo "::group::$svc"
+            docker build --pull --platform linux/arm64 \
+              --build-arg APP_VERSION="$TAG" \
+              --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label org.opencontainers.image.revision="$GITHUB_SHA" \
+              --label org.opencontainers.image.version="$TAG" \
+              -f "images/$svc/Dockerfile" -t "$REGISTRY/monitoring_$svc:$TAG" .
+            echo "::endgroup::"
+          done
+
+      # Every new image is scanned before any is pushed: a release ships whole or not at all.
+      - name: Trivy scan
+        if: steps.missing.outputs.services != ''
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NEW: ${{ steps.missing.outputs.services }}
+        run: |
+          failed=0
+          for svc in $NEW; do
+            echo "::group::$svc"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
+              image --scanners vuln --severity CRITICAL --ignore-unfixed \
+              --exit-code 1 --no-progress "$REGISTRY/monitoring_$svc:$TAG" || failed=1
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Push
+        if: steps.missing.outputs.services != ''
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NEW: ${{ steps.missing.outputs.services }}
+        run: |
+          for svc in $NEW; do
+            docker push "$REGISTRY/monitoring_$svc:$TAG"
+            echo "::notice::Published $REGISTRY/monitoring_$svc:$TAG."
+          done
+
+      # An anonymous pull must be refused — fails the release if any image is public.
+      - name: Verify every image is private
+        if: steps.release.outputs.release == 'true'
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          anon=$(mktemp -d)
+          failed=0
+          for svc in $SERVICES; do
+            image="$REGISTRY/monitoring_$svc:$TAG"
+            if out=$(DOCKER_CONFIG="$anon" docker manifest inspect "$image" 2>&1); then
+              echo "::error::$image can be pulled WITHOUT credentials — it is PUBLIC. Make it private: github.com/users/$GITHUB_REPOSITORY_OWNER/packages/container/monitoring_$svc/settings → Danger Zone → Change visibility."
+              failed=1
+            elif printf '%s' "$out" | grep -qiE "unauthorized|denied|authentication required"; then
+              echo "$image: private ✓"
+            else
+              echo "::error::Could not verify $image is private: $out"
+              failed=1
+            fi
+          done
+          rm -rf "$anon"
+          exit "$failed"
+
+  # CD — Portainer pulls main and redeploys the stack with the new tags; builds
+  # nothing. Never runs for a pull request; only the owner, only this repo.
   cd:
     name: cd
-    needs: [ci]
+    needs: [release]
     if: >-
-      needs.ci.outputs.deploy == 'true'
-      && github.event_name != 'pull_request'
+      needs.release.outputs.release == 'true'
       && github.repository == 'konstantinosmpouros/monitoring'
       && github.actor == github.repository_owner
-    # Secrets scoped to the `production` environment (main only, no reviewers):
-    # only this job, on main, can read the deploy key. No approval step.
-    environment: production
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Dennis is the `production` environment (main only, no reviewers): its
+    # webhook secret is readable only by this job. No approval step.
+    environment:
+      name: production
+      url: https://monitoring.magenticx.com
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     concurrency:
       group: deploy-monitoring
       cancel-in-progress: false
     permissions:
       contents: read
+    env:
+      SITE: https://monitoring.magenticx.com
     steps:
       # Fail closed: a re-run by someone else is refused too.
       - name: Only the repository owner can deploy
@@ -143,54 +322,35 @@ jobs:
             exit 1
           fi
 
-      # The key only ever exists in $RUNNER_TEMP (0600), and is removed below.
-      - name: Write the deploy key and pinned host key
-        env:
-          SSH_KEY: ${{ secrets.DENNIS_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DENNIS_SSH_KNOWN_HOSTS }}
-          SSH_HOST: ${{ secrets.DENNIS_SSH_HOST }}
-          SSH_USER: ${{ secrets.DENNIS_SSH_USER }}
-        run: |
-          missing=0
-          for v in SSH_KEY KNOWN_HOSTS SSH_HOST SSH_USER; do
-            if [ -z "${!v}" ]; then
-              echo "::error::Repository secret for $v is not set (DENNIS_SSH_KEY / DENNIS_SSH_KNOWN_HOSTS / DENNIS_SSH_HOST / DENNIS_SSH_USER — Settings → Secrets and variables → Actions)."
-              missing=1
-            fi
-          done
-          [ "$missing" = 0 ] || exit 1
-          umask 077
-          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/deploy_key"
-          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
-
-      # The forced command ignores everything but a 40-hex sha on main.
-      - name: Sync configs on Dennis (checkout + restart changed services)
-        env:
-          SSH_HOST: ${{ secrets.DENNIS_SSH_HOST }}
-          SSH_USER: ${{ secrets.DENNIS_SSH_USER }}
-        run: |
-          ssh -i "$RUNNER_TEMP/deploy_key" \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            -o GlobalKnownHostsFile=/dev/null \
-            -o BatchMode=yes \
-            -o ConnectTimeout=20 \
-            -o ServerAliveInterval=30 \
-            "$SSH_USER@$SSH_HOST" "$GITHUB_SHA"
-
       # Portainer pulls main and redeploys the Swarm stack. Safe to retry.
       - name: Tell Portainer to pull main and redeploy the stack
-        if: needs.ci.outputs.redeploy == 'true'
         env:
           WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
         run: |
           if [ -z "$WEBHOOK_URL" ]; then
-            echo "::error::PORTAINER_WEBHOOK_URL is not set (Settings → Secrets and variables → Actions → Repository secrets)."
+            echo "::error::PORTAINER_WEBHOOK_URL is not set (Settings → Environments → production → Environment secrets)."
             exit 1
           fi
           curl -fsS --max-time 60 --retry 3 --retry-all-errors -X POST -o /dev/null "$WEBHOOK_URL"
 
-      - name: Remove the deploy key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"
+      # The Grafana image serves its release tag at /public/monitoring-version.txt.
+      - name: Wait for the release to go live
+        env:
+          WANT: ${{ needs.release.outputs.tag }}
+        run: |
+          deadline=$((SECONDS + 900))
+          while :; do
+            live=$(curl -fsS --max-time 10 "$SITE/public/monitoring-version.txt?t=$(date +%s)" | tr -d '[:space:]' || true)
+            health=$(curl -fsS --max-time 10 "$SITE/api/health" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("database", ""))' 2>/dev/null || true)
+            if [ "$live" = "$WANT" ] && [ "$health" = ok ]; then
+              echo "Live: monitoring $live, Grafana database ok"
+              exit 0
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Not live after 15 min (Grafana serves '${live:-none}', want $WANT; database '${health:-none}'). Check the stack in Portainer."
+              exit 1
+            fi
+            echo "Waiting: ${live:0:20}/$WANT, database ${health:-none}"
+            sleep 20
+          done

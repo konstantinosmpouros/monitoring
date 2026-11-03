@@ -24,7 +24,7 @@ Grafana runs at <http://localhost:3000> as user `admin`. It listens on 127.0.0.1
 
 ## Dennis
 
-The Portainer Swarm stack `monitoring` deploys [`docker-compose-denis.yml`](docker-compose-denis.yml). The configs are bind-mounted from `/opt/monitoring/repo/`, a checkout that CD (`.github/workflows/pipeline.yml`) moves to each new commit on `main` over a locked-down SSH key, restarting only the services whose config changed; a compose change also triggers the Portainer webhook. The operational runbook is kept privately.
+The Portainer Swarm stack `monitoring` deploys [`docker-compose-denis.yml`](docker-compose-denis.yml). Every config is baked into a `monitoring_<service>` image ([`images/`](images/)), so a release is one tag bump in that file: CI ([`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml)) validates the configs, builds the new images natively on ARM64, scans them with Trivy, publishes them privately to GHCR and calls the Portainer webhook, then waits until the live Grafana reports the new tag. CD never logs into the VM. The operational runbook is kept privately.
 
 ## Layout
 
@@ -36,7 +36,7 @@ The Portainer Swarm stack `monitoring` deploys [`docker-compose-denis.yml`](dock
 | `loki-config.yml`, `loki-rules.yml` | Loki + LogQL alert rules |
 | `alloy-config.alloy` | Docker logs → Loki |
 | `alertmanager.yml` | E-mail routing (Dennis) |
-| `grafana/` | Datasource + dashboard provisioning, dashboards per app |
-| `deploy/dennis-deploy.sh` | The forced-command deploy script CD runs on Dennis |
+| `grafana/` | Datasource + dashboard provisioning, dashboards per app (+ `dennis/` host dashboards) |
+| `images/<service>/Dockerfile` | The Dennis images: upstream Grafana / Prometheus / Alertmanager / Loki / Alloy + these configs |
 | `local/` | Local-only discovery (Compose → Swarm label mapping) and a silent Alertmanager |
 | `secrets/`, `tls/` | Gitignored: local Grafana password; Dennis Grafana cert + key |

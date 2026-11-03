@@ -1,8 +1,16 @@
-# Grafana datasource provisioning — bind-mounted into the template Grafana at
-# /etc/grafana/provisioning/datasources/magenticx.yml so Prometheus + Loki are
-# wired automatically. If the template image already ships a Prometheus
-# datasource under a different uid, you'll see a duplicate — delete the other.
+# Grafana datasource provisioning — baked into the Dennis Grafana image
+# (bind-mounted locally) at /etc/grafana/provisioning/datasources/monitoring.yml
+# so Prometheus + Loki are wired automatically. Dashboards reference them by
+# these uids.
 apiVersion: 1
+
+# Drop any older "Prometheus" first: the Portainer template Grafana this stack
+# ran before (9.5.2) provisioned one under another uid, and Grafana 12 refuses
+# to start on that database ("data source not found"). Recreated below with the
+# same uid on every start, so dashboards keep resolving.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
 
 datasources:
   - name: Prometheus

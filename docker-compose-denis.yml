@@ -5,10 +5,13 @@
 # Deployed by Portainer as the Swarm stack `monitoring` (its service,
 # volume and network names derive from that stack name — keep it, or Grafana /
 # Prometheus / Loki history is orphaned in the old volumes). Portainer pulls
-# THIS file from this repo. The configs are bind-mounted from the CD checkout
-# /opt/monitoring/repo/ on the VM (deploy/dennis-deploy.sh keeps it at the
-# deployed commit); the Grafana TLS pair stays outside the repo, in
-# /opt/monitoring/tls/.
+# THIS file from this repo.
+#
+# Every config is baked into a `monitoring_*` image (images/<service>/
+# Dockerfile). RELEASE = bump the shared tag below (patch digit); CD builds the
+# images that tag doesn't exist for yet, pushes them to GHCR (private) and calls
+# the Portainer webhook. All five monitoring_* images always carry ONE tag.
+# Only the Grafana TLS pair stays on the host, in /opt/monitoring/tls/.
 #
 # GRAFANA_USER is a Portainer stack environment variable. The two secrets are
 # created once by hand: `monitoring_grafana_admin_password` and
@@ -18,7 +21,7 @@ version: "3.8"
 
 services:
   grafana:
-    image: portainer/template-swarm-monitoring:grafana-9.5.2
+    image: ghcr.io/konstantinosmpouros/monitoring_grafana:v0.1.0
     # No host port — Grafana is reachable ONLY through NPM over the `proxy`
     # network (monitoring.magenticx.com). Publishing :3000 would expose it on the
     # VM's IP in plaintext, bypassing NPM's HTTPS + access control.
@@ -34,24 +37,12 @@ services:
         source: grafana-data
         target: /var/lib/grafana
       - type: bind
-        source: /opt/monitoring/repo/grafana/datasources.yml
-        target: /etc/grafana/provisioning/datasources/magenticx.yml
-        read_only: true
-      - type: bind
         source: /opt/monitoring/tls/tls.crt
         target: /etc/grafana/tls/tls.crt
         read_only: true
       - type: bind
         source: /opt/monitoring/tls/tls.key
         target: /etc/grafana/tls/tls.key
-        read_only: true
-      - type: bind
-        source: /opt/monitoring/repo/grafana/dashboards.yml
-        target: /etc/grafana/provisioning/dashboards/magenticx.yml
-        read_only: true
-      - type: bind
-        source: /opt/monitoring/repo/grafana/dashboards
-        target: /etc/grafana/dashboards
         read_only: true
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
@@ -68,7 +59,7 @@ services:
       - proxy
 
   prometheus:
-    image: portainer/template-swarm-monitoring:prometheus-v2.44.0
+    image: ghcr.io/konstantinosmpouros/monitoring_prometheus:v0.1.0
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--log.level=error'
@@ -87,14 +78,6 @@ services:
       - type: volume
         source: prometheus-data
         target: /prometheus
-      - type: bind
-        source: /opt/monitoring/repo/prometheus.yml
-        target: /etc/prometheus/prometheus.yml
-        read_only: true
-      - type: bind
-        source: /opt/monitoring/repo/alert.rules.yml
-        target: /etc/prometheus/alert.rules.yml
-        read_only: true
     networks:
       - net
 
@@ -163,7 +146,7 @@ services:
       - net
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: ghcr.io/konstantinosmpouros/monitoring_alertmanager:v0.1.0
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
@@ -181,15 +164,11 @@ services:
       - type: volume
         source: alertmanager-data
         target: /alertmanager
-      - type: bind
-        source: /opt/monitoring/repo/alertmanager.yml
-        target: /etc/alertmanager/alertmanager.yml
-        read_only: true
     networks:
       - net
 
   loki:
-    image: grafana/loki:3.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_loki:v0.1.0
     command: ["-config.file=/etc/loki/loki-config.yml"]
     deploy:
       replicas: 1
@@ -202,19 +181,11 @@ services:
       - type: volume
         source: loki-data
         target: /loki
-      - type: bind
-        source: /opt/monitoring/repo/loki-config.yml
-        target: /etc/loki/loki-config.yml
-        read_only: true
-      - type: bind
-        source: /opt/monitoring/repo/loki-rules.yml
-        target: /etc/loki/rules/fake/rules.yml
-        read_only: true
     networks:
       - net
 
   alloy:
-    image: grafana/alloy:v1.4.2
+    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.0
     command:
       - run
       - /etc/alloy/config.alloy
@@ -223,10 +194,6 @@ services:
     deploy:
       mode: global
     volumes:
-      - type: bind
-        source: /opt/monitoring/repo/alloy-config.alloy
-        target: /etc/alloy/config.alloy
-        read_only: true
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock

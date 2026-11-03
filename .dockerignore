@@ -1,0 +1,9 @@
+# Build context = repo root; only the configs the Dockerfiles COPY are needed.
+.git
+.github
+secrets/
+tls/
+local/
+CLAUDE.md
+*.env
+gha_*

@@ -28,7 +28,7 @@ name: monitoring
 
 services:
   grafana:
-    image: portainer/template-swarm-monitoring:grafana-9.5.2   # same as Denis
+    image: grafana/grafana:12.4.14   # same as Denis
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -42,8 +42,8 @@ services:
       - grafana_admin_password
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/magenticx.yml:ro
-      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/magenticx.yml:ro
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/monitoring.yml:ro
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/monitoring.yml:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
     depends_on:
       - prometheus
@@ -53,7 +53,7 @@ services:
       - monitoring
 
   prometheus:
-    image: portainer/template-swarm-monitoring:prometheus-v2.44.0   # same as Denis
+    image: prom/prometheus:v3.13.5   # same as Denis
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--log.level=error"
@@ -92,7 +92,7 @@ services:
   # Receives Prometheus and Loki alerts so the rules evaluate end-to-end, and
   # sends them nowhere: a laptop must never e-mail production alert recipients.
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.34.1
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
@@ -105,7 +105,7 @@ services:
       - monitoring
 
   loki:
-    image: grafana/loki:3.1.1
+    image: grafana/loki:3.7.8
     command: ["-config.file=/etc/loki/loki-config.yml"]
     volumes:
       - loki-data:/loki
@@ -117,7 +117,7 @@ services:
 
   # Ships the app containers' Docker logs to Loki (read-only Docker API access).
   alloy:
-    image: grafana/alloy:v1.4.2
+    image: grafana/alloy:v1.20.1
     command:
       - run
       - /etc/alloy/config.alloy
