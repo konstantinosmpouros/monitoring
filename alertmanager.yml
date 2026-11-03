@@ -7,7 +7,7 @@ global:
   # SMTP relay that SENDS the alert mail — here, the same Hotmail account that
   # receives them. Microsoft personal accounts need 2-Step Verification ENABLED
   # and an App Password (basic auth with the normal password is disabled); put
-  # that app password in the magenticx_alert_smtp_password Swarm secret.
+  # that app password in the monitoring_alert_smtp_password Swarm secret.
   smtp_smarthost: "smtp-mail.outlook.com:587"
   smtp_from: "kostasbouros@hotmail.gr"
   smtp_auth_username: "kostasbouros@hotmail.gr"

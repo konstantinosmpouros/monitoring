@@ -19,7 +19,7 @@ umask 022
 
 readonly REPO=/opt/monitoring/repo
 readonly BRANCH=main
-readonly STACK=magenticx_monitoring # keep: volumes + service names derive from it
+readonly STACK=monitoring # keep: volumes + service names derive from it
 readonly HEALTH_TIMEOUT=300         # seconds per deploy, for every service to converge
 readonly ALL_SERVICES="prometheus alertmanager loki alloy grafana"
 

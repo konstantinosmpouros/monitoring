@@ -95,14 +95,14 @@
       "description": "Both app stacks on Dennis, monitoring excluded. OrthodoxAI has no CPU/memory limits yet, so this is the panel that shows it crowding mAgenticX.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (stack) (label_replace(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=~\"(magenticx|orthodoxai)_.*\", container_label_com_docker_swarm_service_name!~\"magenticx_monitoring_.*\"}[5m]), \"stack\", \"$1\", \"container_label_com_docker_swarm_service_name\", \"(magenticx|orthodoxai)_.*\"))", "legendFormat": "{{stack}}"}],
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (stack) (label_replace(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=~\"(magenticx|orthodoxai)_.*\", container_label_com_docker_swarm_service_name!~\"monitoring_.*\"}[5m]), \"stack\", \"$1\", \"container_label_com_docker_swarm_service_name\", \"(magenticx|orthodoxai)_.*\"))", "legendFormat": "{{stack}}"}],
       "gridPos": {"h": 7, "w": 12, "x": 0, "y": 14}
     },
     {
       "id": 12, "type": "timeseries", "title": "Host share — memory by stack",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (stack) (label_replace(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=~\"(magenticx|orthodoxai)_.*\", container_label_com_docker_swarm_service_name!~\"magenticx_monitoring_.*\"}, \"stack\", \"$1\", \"container_label_com_docker_swarm_service_name\", \"(magenticx|orthodoxai)_.*\"))", "legendFormat": "{{stack}}"}],
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (stack) (label_replace(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=~\"(magenticx|orthodoxai)_.*\", container_label_com_docker_swarm_service_name!~\"monitoring_.*\"}, \"stack\", \"$1\", \"container_label_com_docker_swarm_service_name\", \"(magenticx|orthodoxai)_.*\"))", "legendFormat": "{{stack}}"}],
       "gridPos": {"h": 7, "w": 12, "x": 12, "y": 14}
     },
     {

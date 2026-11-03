@@ -13,7 +13,7 @@ discovery.relabel "containers" {
 
   // Ship ONLY the two app stacks' logs — magenticx and orthodoxai — and drop the
   // other Portainer stacks (cloudflare/npm/portainer/…), their noisy old backlog,
-  // and this monitoring stack itself (`magenticx_monitoring`: the regex is
+  // and this monitoring stack itself (`monitoring`: the regex is
   // anchored, so it does not match). Metrics still cover every container via
   // cAdvisor; this filter is logs-only. OrthodoxAI is reached through the Docker
   // socket alone — the monitoring stack joins none of its networks, which is

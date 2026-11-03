@@ -2,7 +2,7 @@
 # Alertmanager, Loki and Alloy, watching every app stack on the shared VM
 # (today mAgenticX `magenticx` and OrthodoxAI `orthodoxai`).
 #
-# Deployed by Portainer as the Swarm stack `magenticx_monitoring` (its service,
+# Deployed by Portainer as the Swarm stack `monitoring` (its service,
 # volume and network names derive from that stack name — keep it, or Grafana /
 # Prometheus / Loki history is orphaned in the old volumes). Portainer pulls
 # THIS file from this repo. The configs are bind-mounted from the CD checkout
@@ -11,8 +11,8 @@
 # /opt/monitoring/tls/.
 #
 # GRAFANA_USER is a Portainer stack environment variable. The two secrets are
-# created once by hand: `magenticx_grafana_admin_password` and
-# `magenticx_alert_smtp_password`. See CLAUDE.md § Dennis.
+# created once by hand: `monitoring_grafana_admin_password` and
+# `monitoring_alert_smtp_password`. See CLAUDE.md § Dennis.
 
 version: "3.8"
 
@@ -253,7 +253,7 @@ networks:
 secrets:
   alert_smtp_password:
     external: true
-    name: magenticx_alert_smtp_password
+    name: monitoring_alert_smtp_password
   grafana_admin_password:
     external: true
-    name: magenticx_grafana_admin_password
+    name: monitoring_grafana_admin_password
