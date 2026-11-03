@@ -24,7 +24,7 @@ Grafana runs at <http://localhost:3000> as user `admin`. It listens on 127.0.0.1
 
 ## Dennis
 
-The Portainer Swarm stack `monitoring` deploys [`docker-compose-denis.yml`](docker-compose-denis.yml). The configs are bind-mounted from `/opt/monitoring/repo/`, a checkout that CD (`.github/workflows/pipeline.yml`) moves to each new commit on `main` over a locked-down SSH key, restarting only the services whose config changed; a compose change also triggers the Portainer webhook. [CLAUDE.md](CLAUDE.md) has the runbook.
+The Portainer Swarm stack `monitoring` deploys [`docker-compose-denis.yml`](docker-compose-denis.yml). The configs are bind-mounted from `/opt/monitoring/repo/`, a checkout that CD (`.github/workflows/pipeline.yml`) moves to each new commit on `main` over a locked-down SSH key, restarting only the services whose config changed; a compose change also triggers the Portainer webhook. The operational runbook is kept privately.
 
 ## Layout
 

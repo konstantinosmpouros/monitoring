@@ -9,3 +9,6 @@ tls/
 
 # CD deploy keys (generated locally, uploaded as a GitHub secret) — never committed
 gha_*
+
+# Local agent instructions/runbook — kept out of the public repo.
+CLAUDE.md
