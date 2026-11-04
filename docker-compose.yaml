@@ -69,15 +69,10 @@ services:
       - monitoring
 
   # Per-container CPU / memory / network / restarts — what the dashboards chart.
-  # KNOWN LOCAL LIMIT: cAdvisor (every version up to v0.52.1, the latest) can't
-  # identify containers when Docker Desktop stores images with containerd
-  # (`docker info` → Storage Driver: overlayfs). It then reports only the whole
-  # machine, so the per-service CPU/memory panels stay empty; logs and every
-  # Loki panel still work. Docker Desktop → Settings → General → untick "Use
-  # containerd for pulling and storing images" switches to overlay2 and fixes it
-  # (images must then be rebuilt/re-pulled). Denis uses overlay2 — unaffected.
+  # v0.60.6 identifies containers with Docker Desktop's containerd image store
+  # (Storage Driver: overlayfs) too; v0.47 to v0.52 reported only the machine.
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.0   # same as Denis
+    image: ghcr.io/google/cadvisor:v0.60.6   # same as Denis
     command: ["-logtostderr", "-docker_only"]
     volumes:
       - /:/rootfs:ro

@@ -83,13 +83,15 @@ services:
       - net
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    image: ghcr.io/google/cadvisor:v0.60.6
     command: -logtostderr -docker_only
     deploy:
       mode: global
       resources:
         limits:
-          memory: 128M
+          # v0.60 peaks around 106 MB on its first pass over the host's
+          # containers (~57 MB steady): 128M was too tight to be safe.
+          memory: 256M
         reservations:
           memory: 64M
     volumes:
@@ -117,11 +119,14 @@ services:
       - net
 
   node-exporter:
-    image: prom/node-exporter:v1.5.0
+    image: prom/node-exporter:v1.12.1
+    # --path.rootfs: the host `/` is bind-mounted at /rootfs, so filesystem
+    # metrics (disk-space alert) describe the host disks, not this container's.
     command:
       - '--path.sysfs=/host/sys'
       - '--path.procfs=/host/proc'
-      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
       - '--no-collector.ipvs'
     deploy:
       mode: global

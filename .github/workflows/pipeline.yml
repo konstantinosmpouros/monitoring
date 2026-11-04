@@ -4,9 +4,11 @@
 #   ci       validate every config, build every image (no push) — every push, PR
 #            and manual run
 #   release  push to main that changed docker-compose-denis.yml, or Run
-#            workflow — owner only: build the images whose tag isn't published
-#            yet on ARM64, Trivy (fixable CRITICAL blocks), push to GHCR, verify
-#            every image is private. Published tags are never overwritten.
+#            workflow — owner only: Trivy the pinned upstream images the stack
+#            runs as-is (cAdvisor, node-exporter; ARM64), build the images whose
+#            tag isn't published yet on ARM64, Trivy them, push to GHCR, verify
+#            every image is private. Fixable CRITICAL CVEs block the release
+#            before anything is pushed. Published tags are never overwritten.
 #   cd       after release: Portainer webhook → wait until the live Grafana
 #            serves the new tag. No SSH: nothing on Dennis but Portainer moves.
 # RELEASE = bump the shared monitoring_* tag in docker-compose-denis.yml.
@@ -46,6 +48,26 @@ jobs:
           printf 'ci-only' > secrets/grafana_admin_password
           docker compose -f docker-compose.yaml config -q
           docker compose -f "$COMPOSE_FILE" config -q
+
+      # The Dennis stack also runs upstream images as-is (cAdvisor, node-exporter):
+      # each pinned ref must exist and ship linux/arm64. release Trivy-scans them.
+      - name: Upstream images exist for ARM64
+        run: |
+          refs=$(grep -E '^[[:space:]]+image:[[:space:]]' "$COMPOSE_FILE" | awk '{print $2}'             | grep -v '/monitoring_' || true)
+          if [ -z "$refs" ]; then
+            echo "::error::No upstream image found in $COMPOSE_FILE (parse error?)"
+            exit 1
+          fi
+          failed=0
+          for ref in $refs; do
+            if docker buildx imagetools inspect "$ref" | grep -qE 'Platform:[[:space:]]+linux/arm64$'; then
+              echo "$ref: linux/arm64 ✓"
+            else
+              echo "::error::$ref is missing or has no linux/arm64 image (Dennis is ARM64)."
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       # rule_files points at /etc/prometheus/alert.rules.yml, so mount it there.
       - name: Prometheus config + rules (promtool)
@@ -182,6 +204,26 @@ jobs:
           fi
           { echo "tag=$unique"; echo "registry=ghcr.io/$owner"; } | tee -a "$GITHUB_OUTPUT"
 
+      # The stack runs these as-is, so they pass the same gate as ours, before
+      # anything is built or pushed. The refs are read from the compose (every
+      # image that is not a monitoring_* one), so the scan can't drift from what
+      # Dennis pulls. Scanned straight from the registry, ARM64 like Dennis.
+      - name: Trivy scan upstream images
+        if: steps.release.outputs.release == 'true'
+        run: |
+          refs=$(grep -E '^[[:space:]]+image:[[:space:]]' "$COMPOSE_FILE" | awk '{print $2}'             | grep -v '/monitoring_' || true)
+          if [ -z "$refs" ]; then
+            echo "::error::No upstream image found in $COMPOSE_FILE (parse error?)"
+            exit 1
+          fi
+          failed=0
+          for ref in $refs; do
+            echo "::group::$ref"
+            docker run --rm -v trivy-cache:/root/.cache "$TRIVY_IMAGE"               image --image-src remote --platform linux/arm64               --scanners vuln --severity CRITICAL --ignore-unfixed               --exit-code 1 --no-progress "$ref" || failed=1
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
       - name: Log in to GHCR
         if: steps.release.outputs.release == 'true'
         env:
@@ -242,7 +284,7 @@ jobs:
           failed=0
           for svc in $NEW; do
             echo "::group::$svc"
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock               -v trivy-cache:/root/.cache "$TRIVY_IMAGE" \
               image --scanners vuln --severity CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "$REGISTRY/monitoring_$svc:$TAG" || failed=1
             echo "::endgroup::"
