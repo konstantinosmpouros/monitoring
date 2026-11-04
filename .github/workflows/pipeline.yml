@@ -41,8 +41,6 @@ jobs:
 
       # The local compose reads a gitignored secret file; give it a throwaway one.
       - name: Compose files
-        env:
-          GRAFANA_USER: ci
         run: |
           mkdir -p secrets
           printf 'ci-only' > secrets/grafana_admin_password
