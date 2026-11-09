@@ -1,0 +1,165 @@
+{
+  "uid": "dennis-observability-pipeline",
+  "title": "Dennis — Observability pipeline",
+  "tags": ["dennis", "observability"],
+  "description": "Monitoring the monitoring: log shipping into Loki, the OTLP collector, Tempo, scrape targets and Prometheus TSDB.",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "links": [{"type": "dashboards", "tags": ["dennis"], "asDropdown": true, "title": "Dennis dashboards", "includeVars": false, "keepTime": true}],
+  "panels": [
+    {
+      "id": 1, "type": "text", "title": "How signals flow",
+      "options": {"mode": "markdown", "content": "| Signal | Path |\n| --- | --- |\n| Traces, metrics, logs (push) | apps → **OTLP (TLS + bearer token)** → `alloy-otlp` → Tempo (traces) / Prometheus (metrics) / Loki (logs) |\n| Container logs | Docker socket → `alloy` → Loki (labels `stack`, `service`, `level`) |\n| Container / host metrics | cAdvisor, node-exporter → Prometheus (scrape) |\n\nA panel that reads *No data* here usually means that component is not deployed yet or does not export that metric; a falling Loki rate for one stack means its logs stopped arriving."},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Scrape targets down",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "count(up == 0) or vector(0)"}],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 6}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Log entries dropped by Alloy (1h)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "decimals": 0, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase(loki_write_dropped_entries_total[1h]))"}],
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 6}
+    },
+    {
+      "id": 4, "type": "stat", "title": "OTLP items refused (1h)",
+      "description": "Spans + metric points + log records the OTLP receivers refused.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "decimals": 0, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase({__name__=~\"otelcol_receiver_refused_(spans|metric_points|log_records)(_total)?\"}[1h]))"}],
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 6}
+    },
+    {
+      "id": 5, "type": "stat", "title": "OTLP exporter send failures (1h)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "decimals": 0, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase({__name__=~\"otelcol_exporter_send_failed_.*_total\"}[1h]))"}],
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 6}
+    },
+    {
+      "id": 6, "type": "row", "title": "Logs → Loki",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 10}
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Loki ingestion rate by stack",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "logs/s", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum by (stack) (rate({stack=~\".+\"}[5m]))", "legendFormat": "{{stack}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 11}
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Alloy log shipper — sent vs dropped entries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
+        {"matcher": {"id": "byRegexp", "options": "dropped.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+      ]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job) (rate(loki_write_sent_entries_total[5m]))", "legendFormat": "sent {{job}}"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job, reason) (rate(loki_write_dropped_entries_total[5m]))", "legendFormat": "dropped {{job}} {{reason}}"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 11}
+    },
+    {
+      "id": 9, "type": "row", "title": "OTLP collector (alloy-otlp)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 19}
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "OTLP receiver — accepted vs refused (items/s)",
+      "description": "rate() drops the metric name, so each signal is its own query; the regex tolerates the name with or without the _total suffix.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
+        {"matcher": {"id": "byRegexp", "options": "refused.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+      ]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_accepted_spans(_total)?\"}[5m]))", "legendFormat": "accepted spans"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_accepted_metric_points(_total)?\"}[5m]))", "legendFormat": "accepted metric points"},
+        {"refId": "C", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_accepted_log_records(_total)?\"}[5m]))", "legendFormat": "accepted log records"},
+        {"refId": "D", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_refused_spans(_total)?\"}[5m]))", "legendFormat": "refused spans"},
+        {"refId": "E", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_refused_metric_points(_total)?\"}[5m]))", "legendFormat": "refused metric points"},
+        {"refId": "F", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_receiver_refused_log_records(_total)?\"}[5m]))", "legendFormat": "refused log records"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20}
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "OTLP exporter send failures (items/s)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (exporter) (rate({__name__=~\"otelcol_exporter_send_failed_spans(_total)?\"}[5m]))", "legendFormat": "spans {{exporter}}"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (exporter) (rate({__name__=~\"otelcol_exporter_send_failed_metric_points(_total)?\"}[5m]))", "legendFormat": "metric points {{exporter}}"},
+        {"refId": "C", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (exporter) (rate({__name__=~\"otelcol_exporter_send_failed_log_records(_total)?\"}[5m]))", "legendFormat": "log records {{exporter}}"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20}
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Tail sampling decisions (traces/s)",
+      "description": "Empty unless the collector runs a tail_sampling processor.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (policy, sampled) (rate({__name__=~\"otelcol_processor_tail_sampling_count_traces_sampled(_total)?\"}[5m]))", "legendFormat": "{{policy}} sampled={{sampled}}"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (sampled) (rate({__name__=~\"otelcol_processor_tail_sampling_global_count_traces_sampled(_total)?\"}[5m]))", "legendFormat": "global sampled={{sampled}}"},
+        {"refId": "C", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate({__name__=~\"otelcol_processor_tail_sampling_sampling_trace_dropped_too_early(_total)?\"}[5m]))", "legendFormat": "dropped too early"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28}
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Tempo ingestion",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "live traces"}, "properties": [{"id": "custom.axisPlacement", "value": "right"}, {"id": "custom.fillOpacity", "value": 0}]}
+      ]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(tempo_distributor_spans_received_total[5m]))", "legendFormat": "spans received /s"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(tempo_ingester_live_traces)", "legendFormat": "live traces"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28}
+    },
+    {
+      "id": 14, "type": "row", "title": "Prometheus",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 36}
+    },
+    {
+      "id": 15, "type": "table", "title": "Scrape targets",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": [
+        {"matcher": {"id": "byType", "options": "number"}, "properties": [
+          {"id": "displayName", "value": "state"},
+          {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]},
+          {"id": "custom.cellOptions", "value": {"type": "color-background"}}
+        ]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "state", "desc": false}]},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true, "format": "table", "expr": "up"}],
+      "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": true, "__name__": true}}}],
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 37}
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "Prometheus TSDB head series",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job) (prometheus_tsdb_head_series)", "legendFormat": "{{job}}"}],
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 37}
+    }
+  ]
+}

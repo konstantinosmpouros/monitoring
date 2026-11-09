@@ -38,6 +38,9 @@ services:
       - GF_SERVER_ROOT_URL=http://localhost:3000
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      # Base of the "Open in Langfuse" links (datasources.yml): the local
+      # Langfuse from ../langfuse, when it runs.
+      - LANGFUSE_URL=http://localhost:3300
     secrets:
       - grafana_admin_password
     volumes:
@@ -48,6 +51,7 @@ services:
     depends_on:
       - prometheus
       - loki
+      - tempo
     restart: unless-stopped
     networks:
       - monitoring
@@ -60,6 +64,9 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=15d"   # Denis keeps 90d; a laptop doesn't need it
       - "--web.enable-lifecycle"
+      - "--web.enable-otlp-receiver"          # see docker-compose-denis.yml
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
     volumes:
       - prometheus-data:/prometheus
       - ./local/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -117,7 +124,11 @@ services:
       - run
       - /etc/alloy/config.alloy
       - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345   # scraped as job alloy (not published)
     user: root   # to read the Docker socket
+    environment:
+      - LANGFUSE_PROJECT_MAGENTICX=magenticx
+      - LANGFUSE_PROJECT_ORTHODOXAI=orthodoxai
     volumes:
       - ./local/alloy-config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -128,7 +139,44 @@ services:
     networks:
       - monitoring
 
+  # Traces (tempo-config.yml), fed only by alloy-otlp.
+  tempo:
+    image: grafana/tempo:2.10.10   # same as Dennis
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - tempo-data:/var/tempo
+      - ./tempo-config.yml:/etc/tempo/tempo.yml:ro
+    restart: unless-stopped
+    networks:
+      - monitoring
+
+  # The OTLP collector (alloy-otlp.alloy), as on Dennis: not root, no Docker
+  # socket, the only service on the `observability` network the apps join.
+  # Needs the three gitignored secrets/otlp_* files (README.md § OTLP secrets).
+  alloy-otlp:
+    image: grafana/alloy:v1.20.1   # same as Dennis
+    command:
+      - run
+      - /etc/alloy/otlp.alloy
+      - --storage.path=/tmp/alloy-otlp
+    user: "65534:65534"
+    volumes:
+      - ./alloy-otlp.alloy:/etc/alloy/otlp.alloy:ro
+    secrets:
+      - otlp_bearer_token
+      - otlp_tls_crt
+      - otlp_tls_key
+    depends_on:
+      - tempo
+      - prometheus
+      - loki
+    restart: unless-stopped
+    networks:
+      - monitoring
+      - observability
+
 volumes:
+  tempo-data:
   grafana-data:
   prometheus-data:
   alertmanager-data:
@@ -137,7 +185,16 @@ volumes:
 
 networks:
   monitoring:
+  # Fixed name, so app projects can join it as `external` (Phase B).
+  observability:
+    name: observability
 
 secrets:
   grafana_admin_password:
     file: ./secrets/grafana_admin_password
+  otlp_bearer_token:
+    file: ./secrets/otlp_bearer_token
+  otlp_tls_crt:
+    file: ./secrets/otlp_tls.crt
+  otlp_tls_key:
+    file: ./secrets/otlp_tls.key

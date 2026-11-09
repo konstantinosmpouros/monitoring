@@ -1,0 +1,180 @@
+{
+  "uid": "mcp-gateway-overview",
+  "title": "MCP Gateway — overview",
+  "tags": ["mcp_gateway"],
+  "description": "Docker MCP Gateway (dind) on Dennis: client sessions, startup, the inner dockerd, errors and the gateway container.",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "links": [{"type": "dashboards", "tags": ["mcp_gateway"], "asDropdown": true, "title": "MCP Gateway dashboards", "includeVars": false, "keepTime": true}],
+  "panels": [
+    {
+      "id": 1, "type": "text", "title": "Runbook",
+      "options": {"mode": "markdown", "content": "The gateway logs upstream plain text: `- Client initialized ...` once per client session (about one per MCP connection), `> N tools listed in Xs` / `> Initialized in Xs` at startup, and the inner dockerd's logfmt lines (`level=` is promoted to a label, upper-cased).\n\n**`Waiting for dockerd...` repeating means the inner dind is stuck** and agent runs fail with `ConnectError`. Recreate it from `denis/mcp_gateway`: `docker compose up -d --force-recreate mcp_gateway`. A bare `docker restart` does **not** fix a dead dind."},
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Client sessions (range)",
+      "description": "Count of `Client initialized` lines: one per MCP client session.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"Client initialized\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 5, "x": 0, "y": 4}
+    },
+    {
+      "id": 3, "type": "stat", "title": "dind stuck? (Waiting for dockerd, 10m)",
+      "description": "`Waiting for dockerd...` lines in the last 10 minutes. A handful at boot is normal; more than 20 means the inner dockerd never came up: recreate the gateway (see Runbook).",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 21}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"Waiting for dockerd\" [10m]))"}],
+      "gridPos": {"h": 4, "w": 5, "x": 5, "y": 4}
+    },
+    {
+      "id": 4, "type": "stat", "title": "Tools listed (last startup)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "—", "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "last_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"tools listed\" | regexp `(?P<tools>\\d+) tools listed` | unwrap tools | __error__=\"\" [$__range]) by (stack)"}],
+      "gridPos": {"h": 4, "w": 5, "x": 10, "y": 4}
+    },
+    {
+      "id": 5, "type": "stat", "title": "Last init time",
+      "description": "From the last `> Initialized in Xs` line.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "s", "noValue": "—", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 60}, {"color": "red", "value": 180}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "last_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"Initialized in\" | regexp `Initialized in (?P<secs>[0-9.]+)s` | unwrap secs | __error__=\"\" [$__range]) by (stack)"}],
+      "gridPos": {"h": 4, "w": 5, "x": 15, "y": 4}
+    },
+    {
+      "id": 6, "type": "stat", "title": "Errors (1h)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\", level=~\"ERROR|FATAL|PANIC\"}[1h]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 4}
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Client sessions per minute",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "bars", "fillOpacity": 60}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"Client initialized\" [1m]))", "legendFormat": "sessions"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Error / warning rate and dockerd waits",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "logs/s", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "ERROR"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+        {"matcher": {"id": "byName", "options": "WARNING"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+        {"matcher": {"id": "byName", "options": "WARN"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+        {"matcher": {"id": "byName", "options": "Waiting for dockerd"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]}
+      ]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum by (level) (rate({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\", level=~\"ERROR|FATAL|PANIC|WARN|WARNING\"}[5m]))", "legendFormat": "{{level}}"},
+        {"refId": "B", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(rate({stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |= \"Waiting for dockerd\" [5m]))", "legendFormat": "Waiting for dockerd"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "id": 9, "type": "logs", "title": "Startup lines",
+      "description": "`Initialized in`, `tools listed`, `servers are enabled` and per-server start lines from the last boots.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "{stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"} |~ `Initialized in|tools listed|servers are enabled|server running on`"}],
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 16}
+    },
+    {
+      "id": 10, "type": "logs", "title": "Errors and warnings",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "{stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\", level=~\"ERROR|FATAL|PANIC|WARN|WARNING\"}"}],
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 16}
+    },
+    {
+      "id": 11, "type": "row", "title": "Gateway container (cAdvisor)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 26}
+    },
+    {
+      "id": 12, "type": "stat", "title": "CPU (cores)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "decimals": 3, "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[5m]))"}],
+      "gridPos": {"h": 4, "w": 5, "x": 0, "y": 27}
+    },
+    {
+      "id": 13, "type": "stat", "title": "Memory",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes", "noValue": "0", "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"})"}],
+      "gridPos": {"h": 4, "w": 5, "x": 5, "y": 27}
+    },
+    {
+      "id": 14, "type": "stat", "title": "Restarts / recreates (1h)",
+      "description": "In-place restarts (start time changed) plus recreates (a new container id appeared, e.g. `--force-recreate`).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 4}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(changes(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[1h])) + (count(last_over_time(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[1h])) - 1)"}],
+      "gridPos": {"h": 4, "w": 5, "x": 10, "y": 27}
+    },
+    {
+      "id": 15, "type": "stat", "title": "Uptime",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "noValue": "down", "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "time() - max(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"})"}],
+      "gridPos": {"h": 4, "w": 5, "x": 15, "y": 27}
+    },
+    {
+      "id": 16, "type": "stat", "title": "Last seen",
+      "description": "Seconds since cAdvisor last saw the gateway container.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "noValue": "never", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 120}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "time() - max(container_last_seen{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"})"}],
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 27}
+    },
+    {
+      "id": 17, "type": "timeseries", "title": "CPU (cores) — gateway incl. its MCP servers",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[5m]))", "legendFormat": "cpu"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 31}
+    },
+    {
+      "id": 18, "type": "timeseries", "title": "Memory — gateway incl. its MCP servers",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"})", "legendFormat": "memory"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 31}
+    },
+    {
+      "id": 19, "type": "timeseries", "title": "Network I/O — gateway",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_network_receive_bytes_total{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[5m]))", "legendFormat": "rx"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_network_transmit_bytes_total{container_label_com_docker_swarm_service_name=\"mcp_gateway_mcp_gateway\"}[5m]))", "legendFormat": "tx"}
+      ],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 31}
+    },
+    {
+      "id": 20, "type": "logs", "title": "Recent logs",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "{stack=\"mcp_gateway\", service=\"mcp_gateway_mcp_gateway\"}"}],
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 39}
+    }
+  ]
+}

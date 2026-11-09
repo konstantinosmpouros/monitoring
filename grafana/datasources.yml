@@ -20,10 +20,77 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: false
+    jsonData:
+      # Exemplars on app metrics (Phase B) jump straight to the trace.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
 
+  # Correlation ids ride on log lines as Loki STRUCTURED METADATA (set by
+  # Alloy, never labels): trace_id → Tempo; langfuse_session / langfuse_trace
+  # (<projectId>/sessions/<thread_id>, <projectId>/traces/<trace_id>, built per
+  # stack in alloy-config.alloy) → Langfuse, where conversation content lives.
+  # LANGFUSE_URL comes from the compose environment.
   - name: Loki
     uid: loki
     type: loki
     access: proxy
     url: http://loki:3100
     editable: false
+    jsonData:
+      derivedFields:
+        - name: Trace
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Open trace in Tempo
+        - name: Langfuse run
+          matcherType: label
+          matcherRegex: langfuse_trace
+          url: "${LANGFUSE_URL}/project/$${__value.raw}"
+          urlDisplayLabel: Open run in Langfuse
+        - name: Langfuse thread
+          matcherType: label
+          matcherRegex: langfuse_session
+          url: "${LANGFUSE_URL}/project/$${__value.raw}"
+          urlDisplayLabel: Open thread in Langfuse
+
+  # Traces from alloy-otlp (tail-sampled: errors, slow, 15% of the rest). RED
+  # metrics and the service map come from Prometheus, where alloy-otlp writes
+  # span metrics computed from 100% of spans.
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        customQuery: true
+        query: '{stack=~".+"} | trace_id = "$${__trace.traceId}"'
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-15m"
+        spanEndTimeShift: "15m"
+        tags:
+          - key: service.name
+            value: service_name
+        queries:
+          - name: Request rate
+            query: 'sum(rate(traces_span_metrics_calls_total{$$__tags}[5m]))'
+          - name: Error rate
+            query: 'sum(rate(traces_span_metrics_calls_total{$$__tags, status_code="STATUS_CODE_ERROR"}[5m]))'
+          - name: p95 latency
+            query: 'histogram_quantile(0.95, sum by (le) (rate(traces_span_metrics_duration_seconds_bucket{$$__tags}[5m])))'
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: loki

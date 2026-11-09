@@ -25,9 +25,10 @@ permissions:
 
 env:
   COMPOSE_FILE: docker-compose-denis.yml
-  # Every images/<service>/ folder; each must have exactly one
-  # monitoring_<service> image line in the Dennis compose.
-  SERVICES: grafana prometheus alertmanager loki alloy
+  # Every images/<service>/ folder; each must have at least one
+  # monitoring_<service> image line in the Dennis compose (alloy has two: the
+  # log shipper and alloy-otlp run the same image), all on one tag.
+  SERVICES: grafana prometheus alertmanager loki alloy tempo
 
 jobs:
   ci:
@@ -46,6 +47,7 @@ jobs:
         run: |
           mkdir -p secrets
           printf 'ci-only' > secrets/grafana_admin_password
+          for f in otlp_bearer_token otlp_tls.crt otlp_tls.key; do printf 'ci-only' > "secrets/$f"; done
           docker compose -f docker-compose.yaml config -q
           docker compose -f "$COMPOSE_FILE" config -q
 
@@ -90,9 +92,13 @@ jobs:
           docker run --rm -v "$PWD:/w:ro" grafana/loki:3.7.8 \
             -config.file=/w/loki-config.yml -verify-config
 
+      - name: Tempo config
+        run: |
+          docker run --rm -v "$PWD:/w:ro" grafana/tempo:2.10.10             -config.file=/w/tempo-config.yml -config.verify=true
+
       - name: Alloy config syntax
         run: |
-          for cfg in alloy-config.alloy local/alloy-config.alloy; do
+          for cfg in alloy-config.alloy local/alloy-config.alloy alloy-otlp.alloy; do
             docker run --rm -v "$PWD:/w:ro" grafana/alloy:v1.20.1 fmt "/w/$cfg" > /dev/null
           done
 
@@ -143,7 +149,7 @@ jobs:
           REF: ${{ github.ref }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          inputs='images grafana prometheus.yml alert.rules.yml alertmanager.yml loki-config.yml loki-rules.yml alloy-config.alloy'
+          inputs='images grafana prometheus.yml alert.rules.yml alertmanager.yml loki-config.yml loki-rules.yml alloy-config.alloy alloy-otlp.alloy tempo-config.yml'
           release=false
           if [ "$REF" = refs/heads/main ]; then
             if [ "$EVENT" = workflow_dispatch ]; then
@@ -176,7 +182,7 @@ jobs:
             exit 1
           fi
 
-      # Exactly one image line per service, all on the same vX.Y.Z tag.
+      # At least one image line per service, all on the same vX.Y.Z tag.
       - name: The release tag
         id: tag
         if: steps.release.outputs.release == 'true'
@@ -187,11 +193,14 @@ jobs:
             repo="ghcr.io/$owner/monitoring_$svc"
             lines=$(grep -E "^[[:space:]]+image:[[:space:]]+${repo}:" "$COMPOSE_FILE" || true)
             count=$(printf '%s\n' "$lines" | grep -c . || true)
-            if [ "$count" != "1" ]; then
-              echo "::error::$COMPOSE_FILE must name exactly one '$repo:vX.Y.Z' image (found $count)"
+            if [ "$count" = "0" ]; then
+              echo "::error::$COMPOSE_FILE must name a '$repo:vX.Y.Z' image (found none)"
               exit 1
             fi
-            tags+=("$(printf '%s' "${lines##*:}" | tr -d '[:space:]')")
+            # alloy has two lines (alloy + alloy-otlp): every line counts.
+            while IFS= read -r line; do
+              tags+=("$(printf '%s' "${line##*:}" | tr -d '[:space:]')")
+            done <<< "$lines"
           done
           unique=$(printf '%s\n' "${tags[@]}" | sort -u)
           if [ "$(printf '%s\n' "$unique" | grep -c .)" != "1" ]; then

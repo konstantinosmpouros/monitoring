@@ -1,6 +1,11 @@
-// Grafana Alloy — ships every container's Docker logs to Loki.
+// Grafana Alloy — ships every watched container's Docker logs to Loki.
 // Runs as a global Swarm service (one per node); reads logs via the Docker API
 // (the mounted socket), so no application change is needed.
+//
+// The OTLP collector (traces / metrics / OTLP logs pushed by the apps) is a
+// SEPARATE Alloy service, `alloy-otlp` (alloy-otlp.alloy): it faces the apps on
+// the `observability` network, so it runs without the Docker socket and as a
+// non-root user. This one never leaves the monitoring `net`.
 
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
@@ -11,26 +16,45 @@ discovery.docker "containers" {
 discovery.relabel "containers" {
   targets = discovery.docker.containers.targets
 
-  // Ship ONLY the two app stacks' logs — magenticx and orthodoxai — and drop the
-  // other Portainer stacks (cloudflare/npm/portainer/…), their noisy old backlog,
-  // and this monitoring stack itself (`monitoring`: the regex is
-  // anchored, so it does not match). Metrics still cover every container via
-  // cAdvisor; this filter is logs-only. OrthodoxAI is reached through the Docker
-  // socket alone — the monitoring stack joins none of its networks, which is
-  // what keeps the two stacks isolated.
+  // Two kinds of workload are watched:
+  //   * Swarm stacks — magenticx, orthodoxai: `stack` = the stack namespace.
+  //   * Plain Compose projects — sandbox, mcp_gateway (they need `privileged`,
+  //     which Swarm ignores): `stack` = the Compose project, but only for those
+  //     two names, so no other Compose project on the host is picked up.
+  // Everything else (cloudflare/npm/portainer/…, and this monitoring stack:
+  // the regexes are anchored) is dropped. Metrics still cover every container
+  // via cAdvisor; this filter is logs-only. The monitoring stack joins none of
+  // these projects' networks: the Docker socket is the only path.
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_stack_namespace"]
-    regex         = "magenticx|orthodoxai"
+    regex         = "(magenticx|orthodoxai)"
+    target_label  = "stack"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "(sandbox|mcp_gateway)"
+    target_label  = "stack"
+  }
+  rule {
+    source_labels = ["stack"]
+    regex         = "magenticx|orthodoxai|sandbox|mcp_gateway"
     action        = "keep"
   }
 
+  // `service` is `<stack>_<service>` for both kinds, as Swarm names it
+  // (magenticx_agents, sandbox_sandbox_runner, mcp_gateway_mcp_gateway), so a
+  // `service` value is never ambiguous between stacks.
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_swarm_service_name"]
+    regex         = "(.+)"
     target_label  = "service"
   }
   rule {
-    source_labels = ["__meta_docker_container_label_com_docker_stack_namespace"]
-    target_label  = "stack"
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project", "__meta_docker_container_label_com_docker_compose_service"]
+    separator     = ";"
+    regex         = "(sandbox|mcp_gateway);(.+)"
+    replacement   = "${1}_${2}"
+    target_label  = "service"
   }
   rule {
     source_labels = ["__meta_docker_container_name"]
@@ -45,14 +69,67 @@ loki.source.docker "containers" {
   forward_to = [loki.process.parse.receiver]
 }
 
-// Surface the JSON `level` as a label so error filtering/alerting is cheap.
+// Langfuse project ids, one per app (Langfuse → project Settings → id), from
+// the compose environment; used only to build the "Open in Langfuse" links.
 loki.process "parse" {
+  // JSON lines (every app service with LOG_FORMAT=json): surface `level` as a
+  // label so error filtering / alerting is cheap, and keep the correlation ids
+  // as STRUCTURED METADATA — high-cardinality, so never labels. Grafana links
+  // `trace_id` to Tempo and the langfuse_* paths to Langfuse.
   stage.json {
-    expressions = { level = "level" }
+    expressions = { level = "level", trace_id = "trace_id", thread_id = "thread_id" }
   }
+
+  // Plain-text upstream lines (mcp_gateway's inner dockerd logs logfmt:
+  // `level=error msg=...`): same `level` label, upper-cased like the apps'.
+  stage.match {
+    selector = "{stack=\"mcp_gateway\"}"
+
+    stage.regex {
+      expression = "\\blevel=(?P<level>[a-z]+)\\b"
+    }
+    stage.template {
+      source   = "level"
+      template = "{{ if .Value }}{{ ToUpper .Value }}{{ end }}"
+    }
+  }
+
+  // Langfuse deep links. Langfuse URLs carry the project id, and both apps log
+  // `"service":"agents"`, so the path is built per stack here, where the stack
+  // is known: <projectId>/sessions/<thread_id> and <projectId>/traces/<trace_id>.
+  stage.match {
+    selector = "{stack=\"magenticx\"}"
+
+    stage.template {
+      source   = "langfuse_session"
+      template = "{{ if .thread_id }}" + coalesce(sys.env("LANGFUSE_PROJECT_MAGENTICX"), "magenticx") + "/sessions/{{ .thread_id }}{{ end }}"
+    }
+    stage.template {
+      source   = "langfuse_trace"
+      template = "{{ if .trace_id }}" + coalesce(sys.env("LANGFUSE_PROJECT_MAGENTICX"), "magenticx") + "/traces/{{ .trace_id }}{{ end }}"
+    }
+  }
+  stage.match {
+    selector = "{stack=\"orthodoxai\"}"
+
+    stage.template {
+      source   = "langfuse_session"
+      template = "{{ if .thread_id }}" + coalesce(sys.env("LANGFUSE_PROJECT_ORTHODOXAI"), "orthodoxai") + "/sessions/{{ .thread_id }}{{ end }}"
+    }
+    stage.template {
+      source   = "langfuse_trace"
+      template = "{{ if .trace_id }}" + coalesce(sys.env("LANGFUSE_PROJECT_ORTHODOXAI"), "orthodoxai") + "/traces/{{ .trace_id }}{{ end }}"
+    }
+  }
+
   stage.labels {
     values = { level = "" }
   }
+  // Empty values are not written, so lines without the ids carry nothing.
+  stage.structured_metadata {
+    values = { trace_id = "", thread_id = "", langfuse_session = "", langfuse_trace = "" }
+  }
+
   forward_to = [loki.write.default.receiver]
 }
 

@@ -1,0 +1,264 @@
+// alloy-otlp — the OTLP collector for every app on Dennis.
+//
+// Apps PUSH OpenTelemetry traces, metrics and logs here over the neutral,
+// attachable `observability` overlay (apps join it; the monitoring stack joins
+// no app network). This service is the only monitoring component on that
+// network, so it is hardened accordingly:
+//   * no Docker socket, runs as a non-root user (compose `user:`), its HTTP
+//     server (UI + /metrics) stays on 127.0.0.1 — its own metrics are
+//     remote-written to Prometheus instead of being scraped;
+//   * OTLP over TLS (server cert from a Swarm secret) + a bearer token every
+//     app must present (another Swarm secret);
+//   * content is never stored: prompt / completion / tool I/O attributes are
+//     deleted here as a second line of defence (the SDKs never capture them —
+//     conversation content lives only in Langfuse).
+//
+// Pipeline:
+//   receiver → memory_limiter → redact ─┬─ traces → spanmetrics + servicegraph (100% of spans) → Prometheus
+//                                       ├─ traces → tail_sampling → batch → Tempo
+//                                       ├─ metrics → batch → Prometheus (OTLP)
+//                                       └─ logs    → batch → Loki (OTLP)
+// Span metrics are computed BEFORE sampling, so RED rates stay exact while
+// Tempo keeps only errors, slow traces and a 15% sample of the rest.
+
+// ── Secrets ─────────────────────────────────────────────────────────────────
+local.file "otlp_token" {
+  filename  = "/run/secrets/otlp_bearer_token"
+  is_secret = true
+}
+
+otelcol.auth.bearer "apps" {
+  token = local.file.otlp_token.content
+}
+
+// ── Receiver ────────────────────────────────────────────────────────────────
+otelcol.receiver.otlp "apps" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+    auth     = otelcol.auth.bearer.apps.handler
+
+    tls {
+      cert_file   = "/run/secrets/otlp_tls_crt"
+      key_file    = "/run/secrets/otlp_tls_key"
+      min_version = "1.2"
+    }
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+    auth     = otelcol.auth.bearer.apps.handler
+
+    tls {
+      cert_file   = "/run/secrets/otlp_tls_crt"
+      key_file    = "/run/secrets/otlp_tls_key"
+      min_version = "1.2"
+    }
+  }
+
+  output {
+    traces  = [otelcol.processor.memory_limiter.default.input]
+    metrics = [otelcol.processor.memory_limiter.default.input]
+    logs    = [otelcol.processor.memory_limiter.default.input]
+  }
+}
+
+// ── Processing ──────────────────────────────────────────────────────────────
+// Refuse data (the SDKs retry) rather than be OOM-killed. Keep below the
+// compose memory limit (512M).
+otelcol.processor.memory_limiter "default" {
+  check_interval = "1s"
+  limit          = "360MiB"
+  spike_limit    = "80MiB"
+
+  output {
+    traces  = [otelcol.processor.attributes.redact.input]
+    metrics = [otelcol.processor.attributes.redact.input]
+    logs    = [otelcol.processor.attributes.redact.input]
+  }
+}
+
+// Content and credentials never reach Tempo / Loki / Prometheus.
+otelcol.processor.attributes "redact" {
+  // GenAI semantic-convention content (prompts, completions, messages, tool
+  // arguments / results) and Langfuse's own input/output attributes.
+  action {
+    pattern = "^gen_ai\\.(prompt|completion|input|output|system_instructions|tool\\.call\\.(arguments|result)).*"
+    action  = "delete"
+  }
+  action {
+    pattern = "^llm\\.(prompts|completions|input_messages|output_messages).*"
+    action  = "delete"
+  }
+  action {
+    pattern = "^langfuse\\..*\\.(input|output)$"
+    action  = "delete"
+  }
+  // Credentials and raw query strings.
+  action {
+    pattern = "^http\\.(request|response)\\.header\\.(authorization|cookie|set[-_]cookie|x[-_]internal[-_].*)$"
+    action  = "delete"
+  }
+  action {
+    key    = "url.query"
+    action = "delete"
+  }
+  action {
+    key    = "db.query.text"
+    action = "delete"
+  }
+
+  output {
+    traces  = [
+      otelcol.connector.spanmetrics.default.input,
+      otelcol.connector.servicegraph.default.input,
+      otelcol.processor.tail_sampling.default.input,
+    ]
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+  }
+}
+
+// RED metrics from 100% of spans. Dimensions are low-cardinality on purpose:
+// a route TEMPLATE (`http.route`), never the raw path; no ids.
+otelcol.connector.spanmetrics "default" {
+  dimension {
+    name = "http.route"
+  }
+  dimension {
+    name = "http.request.method"
+  }
+  dimension {
+    name = "http.response.status_code"
+  }
+  dimension {
+    name = "rpc.method"
+  }
+  dimension {
+    name = "gen_ai.request.model"
+  }
+
+  histogram {
+    unit = "s"
+
+    explicit {
+      buckets = ["50ms", "100ms", "250ms", "500ms", "1s", "2.5s", "5s", "10s", "30s", "60s", "120s", "300s"]
+    }
+  }
+
+  namespace               = "traces.span.metrics"
+  metrics_flush_interval  = "30s"
+  aggregation_temporality = "CUMULATIVE"
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Who-calls-whom (bridge → agents → rag / sandbox / MCP), for Grafana's
+// service map.
+otelcol.connector.servicegraph "default" {
+  dimensions = ["http.request.method"]
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Keep what matters, sample the rest. A trace is decided `decision_wait` after
+// its first span; agent runs longer than that are stored as their first part
+// only (Langfuse holds 100% of agent runs, so this is the request path view).
+otelcol.processor.tail_sampling "default" {
+  decision_wait               = "60s"
+  num_traces                  = 20000
+  expected_new_traces_per_sec = 20
+
+  policy {
+    name = "errors"
+    type = "status_code"
+
+    status_code {
+      status_codes = ["ERROR"]
+    }
+  }
+
+  policy {
+    name = "slow"
+    type = "latency"
+
+    latency {
+      threshold_ms = 5000
+    }
+  }
+
+  policy {
+    name = "sample-15pct"
+    type = "probabilistic"
+
+    probabilistic {
+      sampling_percentage = 15
+    }
+  }
+
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces  = [otelcol.exporter.otlp.tempo.input]
+    metrics = [otelcol.exporter.otlphttp.prometheus.input]
+    logs    = [otelcol.exporter.otlphttp.loki.input]
+  }
+}
+
+// ── Exporters (monitoring `net` only; plain text inside the overlay) ────────
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+
+    tls {
+      insecure = true
+    }
+  }
+}
+
+otelcol.exporter.otlphttp "prometheus" {
+  client {
+    endpoint = "http://prometheus:9090/api/v1/otlp"
+  }
+}
+
+otelcol.exporter.otlphttp "loki" {
+  client {
+    endpoint = "http://loki:3100/otlp"
+  }
+}
+
+// ── Self-monitoring ─────────────────────────────────────────────────────────
+// Not scraped (see header): push our own metrics, incl. otelcol_* receiver /
+// exporter / sampling counters, to Prometheus as job="alloy-otlp".
+prometheus.exporter.self "own" { }
+
+// The exporter's target carries job="integrations/self"; name it after us.
+discovery.relabel "own" {
+  targets = prometheus.exporter.self.own.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "alloy-otlp"
+  }
+}
+
+prometheus.scrape "own" {
+  targets         = discovery.relabel.own.output
+  job_name        = "alloy-otlp"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.remote_write "prometheus" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

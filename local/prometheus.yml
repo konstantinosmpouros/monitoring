@@ -9,6 +9,14 @@ global:
   external_labels:
     monitor: local
 
+# See ../prometheus.yml.
+otlp:
+  promote_resource_attributes:
+    - service.name
+    - service.namespace
+    - service.version
+    - deployment.environment.name
+
 rule_files:
   - /etc/prometheus/alert.rules.yml
 
@@ -31,14 +39,27 @@ scrape_configs:
     # the two app projects only — and every panel works unchanged.
     metric_relabel_configs:
       - source_labels: [container_label_com_docker_compose_project, container_label_com_docker_compose_service]
-        regex: "(magenticx|orthodoxai);(.+)"
+        regex: "(magenticx|orthodoxai|sandbox|mcp_gateway);(.+)"
         target_label: container_label_com_docker_swarm_service_name
         replacement: "${1}_${2}"
       - source_labels: [container_label_com_docker_compose_project]
-        regex: "(magenticx|orthodoxai)"
+        regex: "(magenticx|orthodoxai|sandbox|mcp_gateway)"
         target_label: container_label_com_docker_stack_namespace
         replacement: "${1}"
 
   - job_name: alertmanager
     static_configs:
       - targets: ["alertmanager:9093"]
+
+  # See ../prometheus.yml: alloy-otlp remote-writes its own metrics instead.
+  - job_name: alloy
+    static_configs:
+      - targets: ["alloy:12345"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: tempo
+    static_configs:
+      - targets: ["tempo:3200"]

@@ -1,6 +1,8 @@
 # Dennis monitoring stack — Grafana, Prometheus, cAdvisor, node-exporter,
-# Alertmanager, Loki and Alloy, watching every app stack on the shared VM
-# (today mAgenticX `magenticx` and OrthodoxAI `orthodoxai`).
+# Alertmanager, Loki, Tempo, Alloy (Docker logs) and alloy-otlp (the OTLP
+# collector), watching everything on the shared VM: the Swarm stacks mAgenticX
+# `magenticx` and OrthodoxAI `orthodoxai`, and the plain Compose projects
+# `sandbox` and `mcp_gateway`.
 #
 # Deployed by Portainer as the Swarm stack `monitoring` (its service,
 # volume and network names derive from that stack name — keep it, or Grafana /
@@ -10,18 +12,18 @@
 # Every config is baked into a `monitoring_*` image (images/<service>/
 # Dockerfile). RELEASE = bump the shared tag below (patch digit); CD builds the
 # images that tag doesn't exist for yet, pushes them to GHCR (private) and calls
-# the Portainer webhook. All five monitoring_* images always carry ONE tag.
+# the Portainer webhook. All six monitoring_* images always carry ONE tag.
 # Only the Grafana TLS pair stays on the host, in /opt/monitoring/tls/.
 #
-# No stack environment variables. The three Swarm secrets are created once by
-# hand: `monitoring_grafana_admin_user`, `monitoring_grafana_admin_password` and
-# `monitoring_alert_smtp_password`. See CLAUDE.md § Dennis.
+# No stack environment variables. The six Swarm secrets are created once by
+# hand: `monitoring_grafana_admin_user`, `monitoring_grafana_admin_password`,
+# `monitoring_alert_smtp_password` and the three `monitoring_otlp_*`. See CLAUDE.md § Dennis.
 
 version: "3.8"
 
 services:
   grafana:
-    image: ghcr.io/konstantinosmpouros/monitoring_grafana:v0.1.0
+    image: ghcr.io/konstantinosmpouros/monitoring_grafana:v0.1.1
     # No host port — Grafana is reachable ONLY through NPM over the `proxy`
     # network (monitoring.magenticx.com). Publishing :3000 would expose it on the
     # VM's IP in plaintext, bypassing NPM's HTTPS + access control.
@@ -52,6 +54,8 @@ services:
       - GF_SERVER_CERT_FILE=/etc/grafana/tls/tls.crt
       - GF_SERVER_CERT_KEY=/etc/grafana/tls/tls.key
       - GF_SERVER_ROOT_URL=https://monitoring.magenticx.com
+      # Base of the "Open in Langfuse" links on log lines (datasources.yml).
+      - LANGFUSE_URL=https://langfuse.magenticx.com
     secrets:
       - grafana_admin_user
       - grafana_admin_password
@@ -60,7 +64,7 @@ services:
       - proxy
 
   prometheus:
-    image: ghcr.io/konstantinosmpouros/monitoring_prometheus:v0.1.0
+    image: ghcr.io/konstantinosmpouros/monitoring_prometheus:v0.1.1
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--log.level=error'
@@ -68,6 +72,11 @@ services:
       - '--storage.tsdb.retention.time=90d'
       - '--storage.tsdb.retention.size=8GB'
       - '--web.enable-lifecycle'
+      # alloy-otlp pushes here: app + span metrics over OTLP, its own metrics
+      # over remote write. Only the monitoring `net` reaches Prometheus.
+      - '--web.enable-otlp-receiver'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
     deploy:
       replicas: 1
       restart_policy:
@@ -152,7 +161,7 @@ services:
       - net
 
   alertmanager:
-    image: ghcr.io/konstantinosmpouros/monitoring_alertmanager:v0.1.0
+    image: ghcr.io/konstantinosmpouros/monitoring_alertmanager:v0.1.1
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
@@ -174,7 +183,7 @@ services:
       - net
 
   loki:
-    image: ghcr.io/konstantinosmpouros/monitoring_loki:v0.1.0
+    image: ghcr.io/konstantinosmpouros/monitoring_loki:v0.1.1
     command: ["-config.file=/etc/loki/loki-config.yml"]
     deploy:
       replicas: 1
@@ -191,14 +200,21 @@ services:
       - net
 
   alloy:
-    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.0
+    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.1
     command:
       - run
       - /etc/alloy/config.alloy
       - --storage.path=/var/lib/alloy/data
+      # Prometheus scrapes /metrics over the monitoring `net` (job alloy).
+      - --server.http.listen-addr=0.0.0.0:12345
     user: root
     deploy:
       mode: global
+    environment:
+      # Langfuse project ids for the "Open in Langfuse" links (Langfuse →
+      # project Settings). Not secrets.
+      - LANGFUSE_PROJECT_MAGENTICX=magenticx
+      - LANGFUSE_PROJECT_ORTHODOXAI=orthodoxai
     volumes:
       - type: bind
         source: /var/run/docker.sock
@@ -210,18 +226,88 @@ services:
     networks:
       - net
 
+  # Traces. Fed only by alloy-otlp over `net`; Grafana queries it.
+  tempo:
+    image: ghcr.io/konstantinosmpouros/monitoring_tempo:v0.1.1
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 128M
+    volumes:
+      - type: volume
+        source: tempo-data
+        target: /var/tempo
+    networks:
+      - net
+
+  # The OTLP collector (alloy-otlp.alloy): the ONLY monitoring service on the
+  # neutral `observability` overlay the apps join to push telemetry. Same image
+  # as `alloy`, its own config; no Docker socket, not root, HTTP server on
+  # 127.0.0.1 (its metrics are remote-written). OTLP needs TLS + a bearer token.
+  alloy-otlp:
+    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.1
+    command:
+      - run
+      - /etc/alloy/otlp.alloy
+      - --storage.path=/tmp/alloy-otlp
+    user: "65534:65534"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 96M
+    secrets:
+      - source: otlp_bearer_token
+        target: otlp_bearer_token
+        uid: "65534"
+        gid: "65534"
+        mode: 0400
+      - source: otlp_tls_crt
+        target: otlp_tls_crt
+        uid: "65534"
+        gid: "65534"
+        mode: 0444
+      - source: otlp_tls_key
+        target: otlp_tls_key
+        uid: "65534"
+        gid: "65534"
+        mode: 0400
+    networks:
+      - net
+      - observability
+
 volumes:
   grafana-data:
   prometheus-data:
   alertmanager-data:
   loki-data:
   alloy-data:
+  tempo-data:
 
 networks:
   net:
     driver: overlay
   proxy:
     external: True
+  # Neutral, attachable overlay created once by hand (CLAUDE.md § One-time
+  # setup). Apps join it to push OTLP to alloy-otlp; nothing else of this stack
+  # is on it, and this stack joins no app network.
+  observability:
+    external: true
+    name: observability
 
 secrets:
   alert_smtp_password:
@@ -233,3 +319,12 @@ secrets:
   grafana_admin_password:
     external: true
     name: monitoring_grafana_admin_password
+  otlp_bearer_token:
+    external: true
+    name: monitoring_otlp_bearer_token
+  otlp_tls_crt:
+    external: true
+    name: monitoring_otlp_tls_crt
+  otlp_tls_key:
+    external: true
+    name: monitoring_otlp_tls_key

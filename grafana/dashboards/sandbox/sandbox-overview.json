@@ -1,0 +1,230 @@
+{
+  "uid": "sandbox-overview",
+  "title": "Sandbox — Runner overview",
+  "tags": ["sandbox"],
+  "description": "Sandbox runner on Dennis: /v1/exec audit outcomes, request latency, errors and the runner container.",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "links": [{"type": "dashboards", "tags": ["sandbox"], "asDropdown": true, "title": "Sandbox dashboards", "includeVars": false, "keepTime": true}],
+  "panels": [
+    {
+      "id": 1, "type": "text", "title": "About this dashboard",
+      "options": {"mode": "markdown", "content": "Every `/v1/exec` call writes exactly one `sandbox_exec` audit record (outcome `completed` / `refused` / `unavailable` / `busy` / `failed`); access lines are `http_request_completed` with `fields.status_code` and `fields.duration_ms`. Log panels need `LOG_FORMAT=json`.\n\n**The gVisor boxes run inside the runner's own dind**, so cAdvisor sees only the runner container: the CPU / memory below include every box the runner is executing, and the boxes never appear as containers of their own."},
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "id": 2, "type": "row", "title": "Execs — selected range",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Execs (range)",
+      "description": "All sandbox_exec audit records, whatever the outcome.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\" | event=\"sandbox_exec\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 5}
+    },
+    {
+      "id": 4, "type": "stat", "title": "Completed (range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\" | event=\"sandbox_exec\" | outcome=\"completed\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 5}
+    },
+    {
+      "id": 5, "type": "stat", "title": "Refused (range)",
+      "description": "Rejected before running: timeout too long, invalid or oversized input files.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\" | event=\"sandbox_exec\" | outcome=\"refused\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 5}
+    },
+    {
+      "id": 6, "type": "stat", "title": "Busy (range)",
+      "description": "No free exec slot: the runner's concurrency limit was reached.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\" | event=\"sandbox_exec\" | outcome=\"busy\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 5}
+    },
+    {
+      "id": 7, "type": "stat", "title": "Failed / unavailable (range)",
+      "description": "failed = the run crashed; unavailable = the inner Docker daemon did not answer.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\" | event=\"sandbox_exec\" | outcome=~\"failed|unavailable\" [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 5}
+    },
+    {
+      "id": 8, "type": "stat", "title": "HTTP 5xx (range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "sum(count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"http_request_completed\" | json event=\"event\", status_code=\"fields.status_code\" | event=\"http_request_completed\" | status_code >= 500 [$__range]))"}],
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 5}
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Exec rate by outcome (per minute)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "completed"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+        {"matcher": {"id": "byName", "options": "refused"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+        {"matcher": {"id": "byName", "options": "busy"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
+        {"matcher": {"id": "byName", "options": "failed"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+        {"matcher": {"id": "byName", "options": "unavailable"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-red"}}]}
+      ]},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum by (outcome) (count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\" | event=\"sandbox_exec\" [1m]))", "legendFormat": "{{outcome}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9}
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "/v1/exec request latency (ms)",
+      "description": "End-to-end request time from the access log (http_request_completed, fields.duration_ms): admission, staging, the box run and output collection.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "ms", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "quantile_over_time(0.50, {stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"http_request_completed\" | json event=\"event\", http_path=\"http_path\", duration_ms=\"fields.duration_ms\" | event=\"http_request_completed\" | http_path=\"/v1/exec\" | unwrap duration_ms | __error__=\"\" [5m]) by (stack)", "legendFormat": "p50"},
+        {"refId": "B", "datasource": {"type": "loki", "uid": "loki"}, "expr": "quantile_over_time(0.95, {stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"http_request_completed\" | json event=\"event\", http_path=\"http_path\", duration_ms=\"fields.duration_ms\" | event=\"http_request_completed\" | http_path=\"/v1/exec\" | unwrap duration_ms | __error__=\"\" [5m]) by (stack)", "legendFormat": "p95"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9}
+    },
+    {
+      "id": 11, "type": "table", "title": "Execs by agent (top 10, range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": [{"matcher": {"id": "byType", "options": "number"}, "properties": [{"id": "displayName", "value": "execs"}]}]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "execs", "desc": true}]},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "queryType": "instant", "expr": "topk(10, sum by (agent_slug) (count_over_time({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", agent_slug=\"fields.agent_slug\" | event=\"sandbox_exec\" [$__range])))"}],
+      "transformations": [{"id": "labelsToFields", "options": {}}, {"id": "merge", "options": {}}, {"id": "organize", "options": {"excludeByName": {"Time": true}}}],
+      "gridPos": {"h": 9, "w": 8, "x": 0, "y": 17}
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "5xx and ERROR / WARNING log rate",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "logs/s", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "ERROR"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+        {"matcher": {"id": "byName", "options": "WARNING"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+        {"matcher": {"id": "byName", "options": "HTTP 5xx"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]}
+      ]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum by (level) (rate({stack=\"sandbox\", service=\"sandbox_sandbox_runner\", level=~\"ERROR|CRITICAL|WARNING\"}[5m]))", "legendFormat": "{{level}}"},
+        {"refId": "B", "datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(rate({stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"http_request_completed\" | json event=\"event\", status_code=\"fields.status_code\" | event=\"http_request_completed\" | status_code >= 500 [5m]))", "legendFormat": "HTTP 5xx"}
+      ],
+      "gridPos": {"h": 9, "w": 8, "x": 8, "y": 17}
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Box run time — completed execs (ms)",
+      "description": "fields.duration_ms of completed sandbox_exec records: the command's own run time inside the gVisor box.",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"unit": "ms", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "quantile_over_time(0.50, {stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\", duration_ms=\"fields.duration_ms\" | event=\"sandbox_exec\" | outcome=\"completed\" | unwrap duration_ms | __error__=\"\" [5m]) by (stack)", "legendFormat": "p50"},
+        {"refId": "B", "datasource": {"type": "loki", "uid": "loki"}, "expr": "quantile_over_time(0.95, {stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\", duration_ms=\"fields.duration_ms\" | event=\"sandbox_exec\" | outcome=\"completed\" | unwrap duration_ms | __error__=\"\" [5m]) by (stack)", "legendFormat": "p95"}
+      ],
+      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 17}
+    },
+    {
+      "id": 14, "type": "row", "title": "Runner container (cAdvisor)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 26}
+    },
+    {
+      "id": 15, "type": "stat", "title": "CPU (cores)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "decimals": 3, "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[5m]))"}],
+      "gridPos": {"h": 4, "w": 5, "x": 0, "y": 27}
+    },
+    {
+      "id": 16, "type": "stat", "title": "Memory",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes", "noValue": "0", "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"})"}],
+      "gridPos": {"h": 4, "w": 5, "x": 5, "y": 27}
+    },
+    {
+      "id": 17, "type": "stat", "title": "Restarts / recreates (1h)",
+      "description": "In-place restarts (start time changed) plus recreates (a new container id appeared). Plain docker compose recreates the container, so changes() alone would miss those.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "0", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 4}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(changes(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[1h])) + (count(last_over_time(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[1h])) - 1)"}],
+      "gridPos": {"h": 4, "w": 5, "x": 10, "y": 27}
+    },
+    {
+      "id": 18, "type": "stat", "title": "Uptime",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "noValue": "down", "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "time() - max(container_start_time_seconds{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"})"}],
+      "gridPos": {"h": 4, "w": 5, "x": 15, "y": 27}
+    },
+    {
+      "id": 19, "type": "stat", "title": "Last seen",
+      "description": "Seconds since cAdvisor last saw the runner container. Grows when the container is gone.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "noValue": "never", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 120}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "time() - max(container_last_seen{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"})"}],
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 27}
+    },
+    {
+      "id": 20, "type": "timeseries", "title": "CPU (cores) — runner incl. its boxes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_cpu_usage_seconds_total{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[5m]))", "legendFormat": "cpu"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 31}
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "Memory — runner incl. its boxes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [{"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(container_memory_usage_bytes{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"})", "legendFormat": "memory"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 31}
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Network I/O — runner",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_network_receive_bytes_total{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[5m]))", "legendFormat": "rx"},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(container_network_transmit_bytes_total{container_label_com_docker_swarm_service_name=\"sandbox_sandbox_runner\"}[5m]))", "legendFormat": "tx"}
+      ],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 31}
+    },
+    {
+      "id": 23, "type": "row", "title": "Logs",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39}
+    },
+    {
+      "id": 24, "type": "logs", "title": "Recent errors",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "{stack=\"sandbox\", service=\"sandbox_sandbox_runner\", level=~\"ERROR|CRITICAL\"}"}],
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 40}
+    },
+    {
+      "id": 25, "type": "logs", "title": "Recent sandbox_exec audit records",
+      "description": "One line per /v1/exec call. Expand a line for the full record (command_sha256, conversation_id, bytes, truncation).",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending"},
+      "targets": [{"refId": "A", "datasource": {"type": "loki", "uid": "loki"}, "expr": "{stack=\"sandbox\", service=\"sandbox_sandbox_runner\"} |= \"sandbox_exec\" | json event=\"event\", outcome=\"fields.outcome\", agent=\"fields.agent_slug\", exit_code=\"fields.exit_code\", run_ms=\"fields.duration_ms\", refusal=\"fields.refusal\", error_type=\"fields.error_type\", prefix=\"fields.command_prefix\" | event=\"sandbox_exec\" | line_format `{{.outcome}} agent={{.agent}} exit={{.exit_code}} run_ms={{.run_ms}} {{.refusal}}{{.error_type}} cmd={{.prefix}}`"}],
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 50}
+    }
+  ]
+}

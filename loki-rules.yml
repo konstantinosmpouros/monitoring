@@ -2,16 +2,16 @@
 # Bind-mounted to /etc/loki/rules/fake/rules.yml; fires into the same
 # Alertmanager as the Prometheus rules, so everything emails one place.
 #
-# Two app stacks ship logs here (alloy-config.alloy): magenticx and orthodoxai.
-# The generic rules group `by (stack)` / `by (service)`, so one rule covers both
-# and the alert e-mail names the stack. Services are named `<stack>_<service>`,
+# Four stacks ship logs here (alloy-config.alloy): magenticx, orthodoxai,
+# sandbox and mcp_gateway. The generic rules group `by (stack)` / `by (service)`,
+# so one rule covers all of them and the alert e-mail names the stack. Services are named `<stack>_<service>`,
 # so a `service` label alone is never ambiguous between the two.
 groups:
   - name: application-errors
     rules:
       - alert: HighErrorLogRate
         expr: |
-          sum by (stack) (rate({stack=~"magenticx|orthodoxai", level="ERROR"}[5m])) > 0.2
+          sum by (stack) (rate({stack=~"magenticx|orthodoxai|sandbox|mcp_gateway", level="ERROR"}[5m])) > 0.2
         for: 5m
         labels:
           severity: warning
@@ -21,7 +21,7 @@ groups:
 
       - alert: ServiceErrorBurst
         expr: |
-          sum by (stack, service) (count_over_time({stack=~"magenticx|orthodoxai", level="ERROR"}[5m])) > 10
+          sum by (stack, service) (count_over_time({stack=~"magenticx|orthodoxai|sandbox|mcp_gateway", level="ERROR"}[5m])) > 10
         for: 0m
         labels:
           severity: critical
@@ -31,7 +31,7 @@ groups:
 
       - alert: UnhandledException
         expr: |
-          sum by (stack, service) (count_over_time({stack=~"magenticx|orthodoxai"} |= "unhandled_exception" [5m])) > 0
+          sum by (stack, service) (count_over_time({stack=~"magenticx|orthodoxai|sandbox"} |= "unhandled_exception" [5m])) > 0
         for: 0m
         labels:
           severity: critical
@@ -48,6 +48,62 @@ groups:
         annotations:
           summary: "Multiple agent run errors in {{ $labels.service }}"
           description: ">3 agent_run_error events in 10m."
+
+      # The log pipeline itself: no line from ANY watched stack for an hour
+      # means Alloy, Loki or the Docker socket mount is broken (the apps log
+      # health and access lines all day).
+      - alert: LogsStoppedArriving
+        expr: |
+          absent_over_time({stack=~"magenticx|orthodoxai|sandbox|mcp_gateway"}[1h])
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No logs from any watched stack for 1h"
+          description: "Loki has received nothing from magenticx, orthodoxai, sandbox or mcp_gateway in an hour. Check monitoring_alloy and monitoring_loki."
+
+  # Sandbox runner (plain Compose project `sandbox`): the `sandbox_exec` audit
+  # event, one per exec, outcome = completed | refused | unavailable | busy |
+  # failed.
+  - name: sandbox
+    rules:
+      - alert: SandboxExecFailures
+        expr: |
+          sum by (stack) (count_over_time({stack="sandbox"} |= "sandbox_exec" | json | fields_outcome=~"failed|unavailable" [10m])) > 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sandbox execs are failing"
+          description: ">3 sandbox_exec events with outcome failed/unavailable in 10m: agent code execution is broken (gVisor box, inner dind or workspace)."
+
+      # Refusals are the runner's policy saying no. A surge means a caller is
+      # pushing past the policy (a prompt-injected agent, or a bug).
+      - alert: SandboxExecRefusalSurge
+        expr: |
+          sum by (stack) (count_over_time({stack="sandbox"} |= "sandbox_exec" | json | fields_outcome="refused" [10m])) > 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Surge of refused sandbox execs"
+          description: ">20 refused sandbox_exec events in 10m. See Sandbox / Runner overview for the agent_slug."
+
+  # MCP gateway (plain Compose project `mcp_gateway`, upstream image, text logs).
+  - name: mcp-gateway
+    rules:
+      # The known failure mode: the inner dockerd never comes up and the
+      # entrypoint loops on this line; port 8005 never opens. A bare restart
+      # does not fix it: recreate from denis/mcp_gateway.
+      - alert: McpGatewayDindStuck
+        expr: |
+          sum by (stack) (count_over_time({stack="mcp_gateway"} |= "Waiting for dockerd" [10m])) > 20
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MCP gateway stuck waiting for its inner dockerd"
+          description: "The dind entrypoint is looping on 'Waiting for dockerd'. Recreate with docker compose -p mcp_gateway -f docker-compose-denis.yaml up -d --force-recreate (a restart is not enough)."
 
   # OrthodoxAI-only signals — events the magenticx services do not emit.
   - name: orthodoxai-kiosk

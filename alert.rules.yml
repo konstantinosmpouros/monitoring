@@ -3,9 +3,11 @@
 # changes required. Application-level alerts (5xx, agent failures, log errors)
 # live in loki-rules.yml.
 #
-# Two app stacks share this host and this rule file: magenticx and orthodoxai.
-# The container rules cover both and stamp a `project` label (derived from the
-# Swarm service name) so an alert e-mail says which stack it is about.
+# Four stacks share this host and this rule file: the Swarm stacks magenticx and
+# orthodoxai, and the plain Compose projects sandbox and mcp_gateway (their
+# cAdvisor labels are rebuilt Swarm-style in prometheus.yml). The container
+# rules cover all four and stamp a `project` label (derived from the service
+# name) so an alert e-mail says which stack it is about.
 groups:
   - name: monitoring-self
     rules:
@@ -19,6 +21,41 @@ groups:
         annotations:
           summary: "Scrape target down: {{ $labels.job }} ({{ $labels.instance }})"
           description: "Prometheus has not reached {{ $labels.job }} for >2m."
+
+      # alloy-otlp is not scraped (it stays off the network it shares with the
+      # apps): it remote-writes its own metrics, so silence is the down signal.
+      - alert: AlloyOtlpMissing
+        expr: absent_over_time(alloy_build_info{job="alloy-otlp"}[5m])
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OTLP collector alloy-otlp is not reporting"
+          description: "No self-metrics from alloy-otlp for 10m: app traces and metrics are not being received."
+
+      # The collector is refusing data (memory limiter, auth, malformed) or
+      # failing to deliver it to Tempo / Prometheus / Loki.
+      - alert: OtlpDroppingData
+        expr: |
+          sum by (job) (
+            rate({__name__=~"otelcol_(receiver_refused|exporter_send_failed)_(spans|metric_points|log_records)(_total)?", job="alloy-otlp"}[5m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OTLP collector is dropping data"
+          description: "alloy-otlp has refused or failed to export telemetry for 10m. See Dennis / Observability pipeline."
+
+      # The Docker-log shipper could not deliver to Loki.
+      - alert: LogShipperDropping
+        expr: sum(rate(loki_write_dropped_entries_total{job="alloy"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alloy is dropping log lines on their way to Loki"
+          description: "loki_write_dropped_entries_total is rising: logs are being lost."
 
   - name: host
     rules:
@@ -65,8 +102,8 @@ groups:
       - alert: ContainerCrashLooping
         expr: |
           label_replace(
-            changes(container_start_time_seconds{container_label_com_docker_swarm_service_name=~"(magenticx|orthodoxai)_.*"}[15m]),
-            "project", "$1", "container_label_com_docker_swarm_service_name", "(magenticx|orthodoxai)_.*"
+            changes(container_start_time_seconds{container_label_com_docker_swarm_service_name=~"(magenticx|orthodoxai|sandbox|mcp_gateway)_.*"}[15m]),
+            "project", "$1", "container_label_com_docker_swarm_service_name", "(magenticx|orthodoxai|sandbox|mcp_gateway)_.*"
           ) > 3
         for: 0m
         labels:
@@ -78,8 +115,8 @@ groups:
       - alert: ContainerHighMemory
         expr: |
           label_replace(
-            container_memory_usage_bytes{container_label_com_docker_swarm_service_name=~"(magenticx|orthodoxai)_.*"},
-            "project", "$1", "container_label_com_docker_swarm_service_name", "(magenticx|orthodoxai)_.*"
+            container_memory_usage_bytes{container_label_com_docker_swarm_service_name=~"(magenticx|orthodoxai|sandbox|mcp_gateway)_.*"},
+            "project", "$1", "container_label_com_docker_swarm_service_name", "(magenticx|orthodoxai|sandbox|mcp_gateway)_.*"
           ) > 1.5e9
         for: 10m
         labels:
@@ -87,3 +124,19 @@ groups:
         annotations:
           summary: "High memory ({{ $labels.project }}): {{ $labels.container_label_com_docker_swarm_service_name }}"
           description: "A single container has used >1.5GB for 10m."
+
+      # Swarm reschedules a failed task; plain Compose (restart: unless-stopped)
+      # does not recreate a container that was removed or never came back after
+      # a reboot. cAdvisor forgets a container once it stops, so silence is the
+      # signal.
+      - alert: ContainerMissing
+        expr: |
+          absent_over_time(container_last_seen{container_label_com_docker_swarm_service_name="sandbox_sandbox_runner"}[5m])
+          or
+          absent_over_time(container_last_seen{container_label_com_docker_swarm_service_name="mcp_gateway_mcp_gateway"}[5m])
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container not running: {{ $labels.container_label_com_docker_swarm_service_name }}"
+          description: "No running container for this Compose service for 10m. mAgenticX code execution (sandbox) or MCP tools (mcp_gateway) are down."
