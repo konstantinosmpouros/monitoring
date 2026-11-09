@@ -23,7 +23,7 @@ version: "3.8"
 
 services:
   grafana:
-    image: ghcr.io/konstantinosmpouros/monitoring_grafana:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_grafana:v0.1.2
     # No host port — Grafana is reachable ONLY through NPM over the `proxy`
     # network (monitoring.magenticx.com). Publishing :3000 would expose it on the
     # VM's IP in plaintext, bypassing NPM's HTTPS + access control.
@@ -64,7 +64,7 @@ services:
       - proxy
 
   prometheus:
-    image: ghcr.io/konstantinosmpouros/monitoring_prometheus:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_prometheus:v0.1.2
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--log.level=error'
@@ -161,7 +161,7 @@ services:
       - net
 
   alertmanager:
-    image: ghcr.io/konstantinosmpouros/monitoring_alertmanager:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_alertmanager:v0.1.2
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
@@ -183,7 +183,7 @@ services:
       - net
 
   loki:
-    image: ghcr.io/konstantinosmpouros/monitoring_loki:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_loki:v0.1.2
     command: ["-config.file=/etc/loki/loki-config.yml"]
     deploy:
       replicas: 1
@@ -200,7 +200,7 @@ services:
       - net
 
   alloy:
-    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.2
     command:
       - run
       - /etc/alloy/config.alloy
@@ -228,7 +228,7 @@ services:
 
   # Traces. Fed only by alloy-otlp over `net`; Grafana queries it.
   tempo:
-    image: ghcr.io/konstantinosmpouros/monitoring_tempo:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_tempo:v0.1.2
     command: ["-config.file=/etc/tempo/tempo.yml"]
     deploy:
       replicas: 1
@@ -254,7 +254,7 @@ services:
   # as `alloy`, its own config; no Docker socket, not root, HTTP server on
   # 127.0.0.1 (its metrics are remote-written). OTLP needs TLS + a bearer token.
   alloy-otlp:
-    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.1
+    image: ghcr.io/konstantinosmpouros/monitoring_alloy:v0.1.2
     command:
       - run
       - /etc/alloy/otlp.alloy

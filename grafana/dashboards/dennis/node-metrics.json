@@ -333,7 +333,7 @@
               "type": "prometheus",
               "uid": "PBFA97CFB590B2093"
             },
-            "expr": "node_memory_Buffers_bytes{job=\"node\", instance=\"$instance\"}",
+            "expr": "node_memory_Buffers_bytes{job=\"$job\", instance=\"$instance\"}",
             "format": "time_series",
             "intervalFactor": 2,
             "legendFormat": "memory buffers",
@@ -344,7 +344,7 @@
               "type": "prometheus",
               "uid": "PBFA97CFB590B2093"
             },
-            "expr": "node_memory_Cached_bytes{job=\"node\", instance=\"$instance\"}",
+            "expr": "node_memory_Cached_bytes{job=\"$job\", instance=\"$instance\"}",
             "format": "time_series",
             "intervalFactor": 2,
             "legendFormat": "memory cached",
@@ -355,7 +355,7 @@
               "type": "prometheus",
               "uid": "PBFA97CFB590B2093"
             },
-            "expr": "node_memory_MemFree_bytes{job=\"node\", instance=\"$instance\"}",
+            "expr": "node_memory_MemFree_bytes{job=\"$job\", instance=\"$instance\"}",
             "format": "time_series",
             "intervalFactor": 2,
             "legendFormat": "memory free",
@@ -678,7 +678,7 @@
               "type": "prometheus",
               "uid": "PBFA97CFB590B2093"
             },
-            "expr": "sum(\n  max by (device) (\n    node_filesystem_avail_bytes{job=\"node\", instance=\"$instance\", fstype!=\"\"}\n  )\n)\n",
+            "expr": "sum(\n  max by (device) (\n    node_filesystem_avail_bytes{job=\"$job\", instance=\"$instance\", fstype!=\"\"}\n  )\n)\n",
             "format": "time_series",
             "intervalFactor": 2,
             "legendFormat": "available",
